@@ -14,7 +14,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * @file config_loader.cppm
+ * @file config_loader_mbp.cppm
  * @brief 配置文件加载器模块
  *
  * 提供从文件系统加载和解析 Modbus Poll (MBP) 配置文件的功能。
@@ -22,9 +22,10 @@
 module;
 
 #include <expected>  // C++23 std::expected，用于函数错误处理
-#include <format>    // 格式化输出
-#include <fstream>   // 文件流操作
-#include <string>    // 字符串类型
+#include <filesystem>
+#include <format>   // 格式化输出
+#include <fstream>  // 文件流操作
+#include <string>   // 字符串类型
 
 /**
  * @module application.config_loader
@@ -35,11 +36,12 @@ module;
  * - 将配置文件内容传递给解析器
  * - 提供错误码到字符串的转换功能
  */
-export module application.config_loader;
+export module application.config_loader_mbp;
 
 import foundation.types;
 import foundation.logger;
 import acquisition.parser.mbp_parser;
+import application.config_loader_interface;
 
 namespace ecas::application {
     namespace types  = foundation::types;
@@ -99,4 +101,26 @@ namespace ecas::application {
         }
         return result;
     }
+
+    /* 适配 ConfigLoader 的工厂函数 */
+    export ConfigLoader
+    make_mbp_loader() {
+        return [](const std::filesystem::path& path)
+                         -> std::expected<types::MbpConfig, types::Error> {
+            return load_mbp_config(path.string());
+        };
+    }
+
+    /* 自动注册 MBP 加载器(模块加载时执行) */
+    namespace {
+        struct AutoRegister {
+            AutoRegister() {
+                ConfigLoaderRegistry::instance().register_loader(
+                          ".mbp", make_mbp_loader);
+            }
+        };
+
+        /* 静态对象,确保在 main 前注册 */
+        AutoRegister _auto_register;
+    }  // namespace
 }  // namespace ecas::application

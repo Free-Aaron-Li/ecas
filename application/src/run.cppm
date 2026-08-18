@@ -32,18 +32,27 @@ export module application.run;
 import foundation.types;
 import foundation.logger;
 import application.settings;
-import application.config_loader;
+import application.config_loader_interface;
 
 namespace ecas::application {
     namespace types  = foundation::types;
     namespace logger = foundation::logger;
 
+    /**
+     * @brief 运行应用程序的核心业务逻辑
+     * @param settings 应用程序配置
+     * @param config_loader 配置文件加载器
+     * @param argc 命令行参数数量
+     * @param argv 命令行参数数组
+     * @return 成功返回 void，失败返回 Error
+     */
     export std::expected<void, types::Error>
-    run(const ApplicationSettings& settings, int argc, char* argv[]) {
+    run(const ApplicationSettings& settings, const ConfigLoader& config_loader,
+        [[maybe_unused]] int argc, [[maybe_unused]] char* argv[]) {
         logger::info("Application started.");
 
-        /* 1. 加载配置 */
-        auto config_result{ load_mbp_config(settings.mbp_config_path) };
+        /* 1. 通过接口加载配置 */
+        auto config_result = config_loader(settings.mbp_config_path);
         if (!config_result) {
             return std::unexpected(std::move(config_result.error()));
         }

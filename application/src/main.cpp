@@ -20,6 +20,7 @@
  * 包含程序的标准 C++ main 函数，负责调用核心运行模块。
  */
 
+#include <filesystem>
 #include <iostream>
 #include <print>
 
@@ -27,6 +28,8 @@ import application.run;
 import foundation.types;
 import foundation.logger;
 import application.settings;
+import application.config_loader_mbp;
+import application.config_loader_interface;
 
 /**
  * @brief 全局主函数，程序的起点
@@ -52,8 +55,23 @@ main(const int argc, char* argv[]) {
     /* 2. 使用 RAII 守卫管理日志生命周期 */
     ecas::foundation::logger::LoggerGuard logger_guard{ settings.log_path };
 
-    /* 3. 运行业务 */
-    if (auto result{ ecas::application::run(settings, argc, argv) }; !result) {
+    /* 3. 创建配置加载器 */
+    auto loader_result{
+        ecas::application::ConfigLoaderRegistry::instance().create(
+                  std::filesystem::path(settings.mbp_config_path))
+    };
+    if (!loader_result) {
+        ecas::foundation::logger::error(
+                  "Failed to create config loader:\n    {}",
+                  ecas::foundation::types::format_error_chain(
+                            loader_result.error()));
+        return 1;
+    }
+
+    /* 4. 运行业务 */
+    if (auto result{ ecas::application::run(settings, *loader_result, argc,
+                                            argv) };
+        !result) {
         auto err_str{ ecas::foundation::types::format_error_chain(
                   result.error()) };
         ecas::foundation::logger::error("Application failed:\n    {}", err_str);

@@ -16,7 +16,7 @@ project(application
 # 4. 定义可执行文件目标
 add_executable(application
         src/main.cpp
-        src/config_loader.cppm
+        src/config_loader_mbp.cppm
 )
 
 # 5. 配置 C++ 模块源
@@ -25,8 +25,9 @@ target_sources(application PUBLIC
         BASE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/src
         FILES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/run.cppm
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/config_loader.cppm
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/config_loader_mbp.cppm
         ${CMAKE_CURRENT_SOURCE_DIR}/src/settings.cppm
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/config_loader_interface.cppm
 )
 
 # 6. 配置链接库

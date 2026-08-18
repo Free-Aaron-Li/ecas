@@ -64,7 +64,7 @@ Doxygen 风格注释。
 
 - `ENABLE_DOXYGEN`, 是否启用 Doxygen 文档生成功能，默认开启；
 - `ENABLE_DOXYGEN_AUTO_UPDATE`，是否在构建时自动更新文档，默认开启；
-- `ENABLE_DOXYGEN_GRAPH`，是否启用图表生成功能（需安装 Graphviz），默认开启。
+- `ENABLE_DOXYGEN_GRAPH`，是否启用图表生成功能（需安装 Graphviz），默认关闭。
 
 ## 5. 关于文档
 
