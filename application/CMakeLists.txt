@@ -28,6 +28,7 @@ target_sources(application PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src/config_loader_mbp.cppm
         ${CMAKE_CURRENT_SOURCE_DIR}/src/settings.cppm
         ${CMAKE_CURRENT_SOURCE_DIR}/src/config_loader_interface.cppm
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/config_loader_json.cppm
 )
 
 # 6. 配置链接库

@@ -28,8 +28,8 @@ module;
 #include <string>   // 字符串类型
 
 /**
- * @module application.config_loader
- * @brief 应用程序配置加载模块
+ * @module application.config_loader_mbp
+ * @brief MBP 解析应用程序配置加载模块
  *
  * 该模块负责：
  * - 读取 MBP 配置文件内容
@@ -113,14 +113,14 @@ namespace ecas::application {
 
     /* 自动注册 MBP 加载器(模块加载时执行) */
     namespace {
-        struct AutoRegister {
-            AutoRegister() {
+        struct AutoRegisterMbp {
+            AutoRegisterMbp() {
                 ConfigLoaderRegistry::instance().register_loader(
                           ".mbp", make_mbp_loader);
             }
         };
 
         /* 静态对象,确保在 main 前注册 */
-        AutoRegister _auto_register;
+        AutoRegisterMbp _auto_register_mbp;
     }  // namespace
 }  // namespace ecas::application
