@@ -1,0 +1,72 @@
+/*
+ * Copyright (C) 2026 Aaron <communicate_aaron@outlook.com>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+/* SPDX-License-Identifier: MIT */
+html {
+    /* primary theme color. This will affect the entire websites color scheme: links, arrows, labels, ... */
+    --primary-color: #1779c4;
+    --primary-dark-color: #335c80;
+    --primary-light-color: #70b1e9;
+
+    /* page colors: background and foreground (text-color) of the documentation. */
+    --page-background-color: #ffffff;
+    --page-foreground-color: #2f4153;
+    --page-secondary-foreground-color: #6f7e8e;
+
+    /* spacing: default spacings. Most ui components reference these values for spacing, to provide uniform spacing on the page. */
+    --spacing-small: 5px;
+    --spacing-medium: 10px;
+    --spacing-large: 16px;
+    --spacing-xlarge: 20px;
+
+    /* border radius: border radius for all rounded ui components. Will affect many components, like dropdowns, memitems, codeblocks, ... */
+    --border-radius-small: 5px;
+    --border-radius-medium: 8px;
+    --border-radius-large: 10px;
+
+    /* content width: The content is centered and constrained in its width. To make the content fill the whole page, set the following variable to "auto". */
+    --content-maxwidth: 1000px;
+
+    /* code fragment colors: Color-Scheme of multiline codeblocks */
+    --fragment-background: #F8F9FA;
+    --fragment-foreground: #37474F;
+
+    /* opacity for side-nav arrows. Set to 0 to hide them. */
+    --side-nav-arrow-opacity: 0;
+    --side-nav-arrow-hover-opacity: 0.9;
+
+    /* TOC: colors of the Table of Contents */
+    --toc-background: var(--page-background-color);
+    --toc-foreground: var(--page-foreground-color);
+    --toc-active-foreground: var(--primary-color);
+    --toc-active-background: var(--primary-light-color);
+}
+
+@media (prefers-color-scheme: dark) {
+    html {
+        --primary-color: #1982d2;
+        --primary-dark-color: #5ca8e2;
+        --primary-light-color: #4779ac;
+
+        --page-background-color: #1C1D1F;
+        --page-foreground-color: #d2dbde;
+        --page-secondary-foreground-color: #859399;
+
+        --fragment-background: #282c34;
+        --fragment-foreground: #dbe4eb;
+    }
+}

@@ -1,0 +1,28 @@
+/**
+ * @namespace ecas
+ * @brief Energy Consumption Acquisition System (ECAS) 根命名空间
+ * 
+ * 项目的顶级命名空间，包含所有业务组件。
+ */
+
+/**
+ * @namespace ecas::foundation
+ * @brief ECAS 基础核心库
+ * 
+ * 提供项目中通用的基础类型、错误码定义、公共工具函数等。
+ * 该模块通常被其他所有业务模块所依赖。
+ */
+
+/**
+ * @namespace ecas::acquisition
+ * @brief 数据采集业务库
+ * 
+ * 负责与硬件设备或数据源进行通信，解析协议并处理采集流程。
+ */
+
+/**
+ * @namespace ecas::application
+ * @brief ECAS 终端应用程序
+ * 
+ * 项目的入口，负责初始化系统环境、加载配置并启动业务引擎。
+ */

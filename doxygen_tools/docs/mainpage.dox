@@ -1,0 +1,18 @@
+/**
+ * @mainpage ECAS 项目文档
+ *
+ * @section intro_sec 项目简介
+ * ECAS (Energy Consumption Acquisition System) 是一个高效的能源消耗数据采集系统。
+ *
+ * @section arch_sec 项目架构
+ * 项目采用模块化设计，主要分为以下几个部分：
+ * - **Foundation**: 核心基础库，定义公共类型和基础逻辑。
+ * - **Acquisition**: 数据采集核心，实现通信协议与数据解析。
+ * - **Application**: 终端应用，负责生命周期管理与界面集成。
+ *
+ * @section namespace_sec 命名空间规范
+ * 全局使用 `ecas` 作为顶级命名空间：
+ * - `ecas::foundation`: 基础核心功能 (foundation)。
+ * - `ecas::acquisition`: 数据采集相关功能 (acquisition)。
+ * - `ecas::application`: 应用层逻辑。
+ */
