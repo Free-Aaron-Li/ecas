@@ -210,22 +210,33 @@ namespace ecas::foundation::logger {
             /**
              * @brief 构造完整日志消息
              * @param level 日志级别
-             * @param loc 原始位置信息
+             * @param loc 源码位置信息
              * @param message 日志消息
+             * @param time_str 缓存的时间字符串（若孔则即时生成）
              * @return 完整格式化后的日志文本
              */
             static std::string
             format(const LogLevel level, const std::source_location& loc,
-                   std::string_view message) {
-                const auto now{ std::chrono::system_clock::now() };
-                const auto time_str{ format_time(now) };
+                   std::string_view message, std::string_view time_str) {
+                /* 若未提供缓存，则回退到即时生成（但不应当发生） */
+                if (time_str.empty()) {
+                    time_str = format_time(std::chrono::system_clock::now());
+                }
+
                 const auto level_str{ level_to_string(level) };
                 const auto loc_str{ simplify_location(loc) };
-                return std::format("{} [{}] [{}] {}", time_str, loc_str,
-                                   level_str, message);
+
+                /* 2. 分配大致容量，减少重分配 */
+                std::string result;
+                result.reserve(time_str.size() + loc_str.size()
+                               + level_str.size() + message.size() + 32);
+
+                /* 3. 追加 */
+                std::format_to(std::back_inserter(result), "{} [{}] [{}] {}",
+                               time_str, loc_str, level_str, message);
+                return result;
             }
 
-        private:
             /**
              * @brief 格式化时间点为字符串
              * @param tp 时间点（通常为 system_clock::now()）
@@ -239,6 +250,7 @@ namespace ecas::foundation::logger {
                 return std::format("{:%Y-%m-%d %H:%M:%S}", local_time);
             }
 
+        private:
             /**
              * @brief 将日志级别转换为字符串
              * @param level 日志级别
@@ -336,12 +348,34 @@ namespace ecas::foundation::logger {
                 _worker([this](const std::stop_token& stop_token) {
                     background_worker(stop_token);
                 }) {
+                /* 1. 初始化缓存一次时间 */
+                update_time_cache();
+                /* 2. 启动时间更新线程（独立于日志工作线程） */
+                _time_updater = std::jthread(
+                          [this](const std::stop_token& stop_token) {
+                              while (!stop_token.stop_requested()) {
+                                  std::this_thread::sleep_for(
+                                            std::chrono::seconds(1));
+                                  update_time_cache();  ///< 每1秒更新1次
+                              }
+                          });
                 std::unique_lock lock(_sinks_mutex);
                 _log_sinks.push_back(std::make_unique<ConsoleSink>());
                 _log_sinks.push_back(std::make_unique<FileSink>());
             }
 
             ~AsyncDispatcher() { shutdown(); }
+
+            /**
+             * @brief 获取当前缓存时间字符串
+             * @return string_view 指向内部缓冲，保证下一个更新周期前有效
+             */
+            [[nodiscard]] std::string_view
+            get_cached_time() const noexcept {
+                const std::string* ptr{ _cached_time.load(
+                          std::memory_order_acquire) };
+                return ptr ? std::string_view(*ptr) : std::string_view{};
+            }
 
             /**
              * @brief 将日志消息加入队列
@@ -398,13 +432,20 @@ namespace ecas::foundation::logger {
                     return;
                 }
 
+                /* 1. 停止时间更新线程 */
+                if (_time_updater.joinable()) {
+                    _time_updater.request_stop();
+                    _time_updater.join();
+                }
+
+                /* 2. 停止日志工作线程 */
                 _worker.request_stop();
                 _cv.notify_all();
-
                 if (_worker.joinable()) {
                     _worker.join();
                 }
 
+                /* 3. 清空 sinks */
                 std::unique_lock lock(_sinks_mutex);
                 _log_sinks.clear();
             }
@@ -448,10 +489,34 @@ namespace ecas::foundation::logger {
                 }
             }
 
-            std::mutex                  _queue_mutex;  ///< 队列互斥锁
-            std::shared_mutex           _sinks_mutex;  ///< Sink集合互斥锁
-            std::condition_variable_any _cv;           ///< 条件变量
-            std::deque<std::string>     _queue;        ///< 消息队列
+            /**
+             * @brief 更新时间缓存
+             *
+             * 使用双缓冲机制更新格式化的时间字符串。
+             * 通过原子操作确保读取线程能够无锁访问有效的时间字符串，
+             * 而写入线程在后台缓冲区中准备新的时间数据。
+             */
+            void
+            update_time_cache() {
+                const auto   now{ std::chrono::system_clock::now() };
+                std::string  new_time{ LogFormatter::format_time(now) };
+                std::string* target{ _use_buffer1 ? &_time_buf1 : &_time_buf2 };
+                *target = std::move(new_time);
+                _cached_time.store(target, std::memory_order_release);
+                _use_buffer1 = !_use_buffer1;
+            }
+
+            std::atomic<const std::string*> _cached_time{
+                nullptr
+            };  ///< 原子指针，指向当前有效的时间缓存
+            std::string _time_buf1;     ///< 时间缓存缓冲区1
+            std::string _time_buf2;     ///< 时间缓存缓冲区2
+            bool _use_buffer1{ true };  ///< 标记当前使用哪个缓冲区进行写入
+            std::jthread                _time_updater;  ///< 时间更新线程
+            std::mutex                  _queue_mutex;   ///< 队列互斥锁
+            std::shared_mutex           _sinks_mutex;   ///< Sink集合互斥锁
+            std::condition_variable_any _cv;            ///< 条件变量
+            std::deque<std::string>     _queue;         ///< 消息队列
             std::vector<std::unique_ptr<LogSink>> _log_sinks;  ///< 输出槽集合
             std::jthread                          _worker;     ///< 后台工作线程
             std::atomic<bool> _shutdown_called{ false };  ///< 是否已调用关闭
@@ -493,7 +558,9 @@ namespace ecas::foundation::logger {
             void
             log(const LogLevel level, const std::source_location& loc,
                 const std::string_view message) {
-                _dispatcher.enqueue(LogFormatter::format(level, loc, message));
+                const auto time_str = _dispatcher.get_cached_time();
+                _dispatcher.enqueue(
+                          LogFormatter::format(level, loc, message, time_str));
             }
 
             /**
