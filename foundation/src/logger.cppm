@@ -233,15 +233,16 @@ namespace ecas::foundation::logger {
                 const size_t needed{ std::formatted_size("{} [{}] [{}] {}",
                                                          time_str, loc_str,
                                                          level_str, message) };
-                if (constexpr size_t STACK_BUFFER_SIZE{ 1024 };
+                if (constexpr size_t STACK_BUFFER_SIZE{ 256 };
                     needed < STACK_BUFFER_SIZE) {
                     /* 使用栈上缓冲区 */
                     std::array<char, STACK_BUFFER_SIZE> buffer{};
-                    auto end{ std::format_to(buffer.data(), "{} [{}] [{}] {}",
-                                             time_str, loc_str, level_str,
-                                             message) };
+                    const auto                          end{ std::format_to(
+                              buffer.data(), "{} [{}] [{}] {}", time_str,
+                              loc_str, level_str, message) };
+                    *end = '\0';
                     /* result 指向末尾，但并未添加 null 终止符 */
-                    return std::string(buffer.data(), end - buffer.data());
+                    return std::string(buffer.data());
                 }
 
                 /* 超长消息，动态分配 */
@@ -399,23 +400,8 @@ namespace ecas::foundation::logger {
              * @param loc 源码位置
              * @param message 格式化后的日志消息
              */
-            void
-            enqueue(LogLevel level, const std::source_location& loc,
-                    std::string_view message) {
-                if (_shutdown_called.load(std::memory_order_acquire)) {
-                    return;
-                }
-
-                std::string formatted_message{ LogFormatter::format(
-                          level, loc, message, get_cached_time()) };
-
-                /* 入队（移动语义，避免拷贝） */
-                {
-                    std::lock_guard lock(_queue_mutex);
-                    _queue.push_back(std::move(formatted_message));
-                }
-                _cv.notify_one();
-            }
+            void enqueue(LogLevel level, const std::source_location& loc,
+                         std::string_view message);
 
             /**
              * @brief 设置日志文件输出路径
@@ -546,6 +532,24 @@ namespace ecas::foundation::logger {
             std::atomic<bool> _shutdown_called{ false };  ///< 是否已调用关闭
         };
 
+        void
+        AsyncDispatcher::enqueue(const LogLevel              level,
+                                 const std::source_location& loc,
+                                 const std::string_view      message) {
+            if (_shutdown_called.load(std::memory_order_acquire)) {
+                return;
+            }
+
+            /* 入队（移动语义，避免拷贝） */
+            {
+                std::string     formatted_message{ LogFormatter::format(
+                          level, loc, message, get_cached_time()) };
+                std::lock_guard lock(_queue_mutex);
+                _queue.push_back(std::move(formatted_message));
+            }
+            _cv.notify_one();
+        }
+
         /**
          * @class Logger
          * @brief 线程安全的日志记录器（单例模式）
@@ -607,6 +611,7 @@ namespace ecas::foundation::logger {
 
             AsyncDispatcher _dispatcher;  ///< 异步日志分发器
         };
+
     }  // namespace
 
     /**
@@ -614,7 +619,7 @@ namespace ecas::foundation::logger {
      * @param loc 源代码调用位置
      * @param message 已经格式化好的日志消息
      */
-    void
+    export void
     internal_info(const std::source_location& loc,
                   const std::string_view      message) {
         Logger::instance().log(LogLevel::Info, loc, message);
@@ -625,7 +630,7 @@ namespace ecas::foundation::logger {
      * @param loc 源代码调用位置
      * @param message 已经格式化好的日志消息
      */
-    void
+    export void
     internal_warning(const std::source_location& loc,
                      const std::string_view      message) {
         Logger::instance().log(LogLevel::Warning, loc, message);
@@ -636,7 +641,7 @@ namespace ecas::foundation::logger {
      * @param loc 源代码调用位置
      * @param message 已经格式化好的日志消息
      */
-    void
+    export void
     internal_error(const std::source_location& loc,
                    const std::string_view      message) {
         Logger::instance().log(LogLevel::Error, loc, message);
@@ -647,7 +652,7 @@ namespace ecas::foundation::logger {
      * @param loc 源代码调用位置
      * @param message 已经格式化好的日志消息
      */
-    void
+    export void
     internal_debug(const std::source_location& loc,
                    const std::string_view      message) {
         Logger::instance().log(LogLevel::Debug, loc, message);
