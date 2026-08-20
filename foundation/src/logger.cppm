@@ -19,6 +19,7 @@
  */
 module;
 
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <deque>
@@ -212,29 +213,44 @@ namespace ecas::foundation::logger {
              * @param level 日志级别
              * @param loc 源码位置信息
              * @param message 日志消息
-             * @param time_str 缓存的时间字符串（若孔则即时生成）
+             * @param time_str 缓存的时间字符串（若为空则即时生成）
              * @return 完整格式化后的日志文本
              */
             static std::string
             format(const LogLevel level, const std::source_location& loc,
                    std::string_view message, std::string_view time_str) {
                 /* 若未提供缓存，则回退到即时生成（但不应当发生） */
+                std::string fallback_time{};
                 if (time_str.empty()) {
-                    time_str = format_time(std::chrono::system_clock::now());
+                    fallback_time
+                              = format_time(std::chrono::system_clock::now());
+                    time_str = fallback_time;
                 }
 
                 const auto level_str{ level_to_string(level) };
                 const auto loc_str{ simplify_location(loc) };
 
-                /* 2. 分配大致容量，减少重分配 */
-                std::string result;
-                result.reserve(time_str.size() + loc_str.size()
-                               + level_str.size() + message.size() + 32);
+                const size_t needed{ std::formatted_size("{} [{}] [{}] {}",
+                                                         time_str, loc_str,
+                                                         level_str, message) };
+                if (constexpr size_t STACK_BUFFER_SIZE{ 1024 };
+                    needed < STACK_BUFFER_SIZE) {
+                    /* 使用栈上缓冲区 */
+                    std::array<char, STACK_BUFFER_SIZE> buffer{};
+                    auto end{ std::format_to(buffer.data(), "{} [{}] [{}] {}",
+                                             time_str, loc_str, level_str,
+                                             message) };
+                    /* result 指向末尾，但并未添加 null 终止符 */
+                    return std::string(buffer.data(), end - buffer.data());
+                }
 
-                /* 3. 追加 */
-                std::format_to(std::back_inserter(result), "{} [{}] [{}] {}",
-                               time_str, loc_str, level_str, message);
-                return result;
+                /* 超长消息，动态分配 */
+                std::string formatted_message;
+                formatted_message.reserve(needed);
+                std::format_to(std::back_inserter(formatted_message),
+                               "{} [{}] [{}] {}", time_str, loc_str, level_str,
+                               message);
+                return formatted_message;
             }
 
             /**
@@ -379,16 +395,24 @@ namespace ecas::foundation::logger {
 
             /**
              * @brief 将日志消息加入队列
+             * @param level 日志级别
+             * @param loc 源码位置
              * @param message 格式化后的日志消息
              */
             void
-            enqueue(std::string message) {
+            enqueue(LogLevel level, const std::source_location& loc,
+                    std::string_view message) {
                 if (_shutdown_called.load(std::memory_order_acquire)) {
                     return;
                 }
+
+                std::string formatted_message{ LogFormatter::format(
+                          level, loc, message, get_cached_time()) };
+
+                /* 入队（移动语义，避免拷贝） */
                 {
                     std::lock_guard lock(_queue_mutex);
-                    _queue.push_back(std::move(message));
+                    _queue.push_back(std::move(formatted_message));
                 }
                 _cv.notify_one();
             }
@@ -558,9 +582,7 @@ namespace ecas::foundation::logger {
             void
             log(const LogLevel level, const std::source_location& loc,
                 const std::string_view message) {
-                const auto time_str = _dispatcher.get_cached_time();
-                _dispatcher.enqueue(
-                          LogFormatter::format(level, loc, message, time_str));
+                _dispatcher.enqueue(level, loc, message);
             }
 
             /**

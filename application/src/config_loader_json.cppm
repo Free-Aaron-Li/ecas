@@ -48,7 +48,7 @@ namespace ecas::application {
 
     export ConfigLoader
     make_json_loader() {
-        return [](const std::filesystem::path& path)
+        return []([[maybe_unused]] const std::filesystem::path& path)
                          -> std::expected<types::MbpConfig, types::Error> {
             ///< TODO 实现 JSON 解析器
             ///< 预返回 Error
