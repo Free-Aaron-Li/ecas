@@ -44,8 +44,11 @@ import acquisition.parser.mbp_parser;
 import application.config_loader_interface;
 
 namespace ecas::application {
-    namespace types  = foundation::types;
     namespace logger = foundation::logger;
+    using foundation::types::ConfigVariant;
+    using foundation::types::Error;
+    using foundation::types::ErrorCode;
+    using foundation::types::MbpConfig;
 
     /**
      * @brief 加载并解析 Modbus Poll (MBP) 配置文件
@@ -56,19 +59,19 @@ namespace ecas::application {
      * 3. 将内容传递给 MbpParser 进行 XML 解析
      *
      * @param file_path 配置文件的路径（字符串视图）
-     * @return std::expected<types::MbpConfig, types::Error>
+     * @return std::expected<MbpConfig, Error>
      *         成功时返回解析后的 MbpConfig 结构体，
      *         失败时返回包含详细上下文的 Error（如 FileNotFound、XmlParseFailed
      * 等）
      */
-    export std::expected<types::MbpConfig, types::Error>
+    export std::expected<MbpConfig, Error>
     load_mbp_config(const std::string_view file_path) {
         /* 1. 打开文件 */
         std::ifstream file(file_path.data());
         if (!file.is_open()) {
-            return std::unexpected(types::Error{
-                      types::ErrorCode::FileNotFound,
-                      std::format("failed to open configuration file: '{}'",
+            return std::unexpected(Error{
+                      ErrorCode::FileNotFound,
+                      std::format("failed to open mbp configuration file: '{}'",
                                   file_path) });
         }
 
@@ -76,8 +79,8 @@ namespace ecas::application {
         const std::string xml_content((std::istreambuf_iterator(file)),
                                       std::istreambuf_iterator<char>());
         if (file.bad()) {
-            return std::unexpected(types::Error{
-                      types::ErrorCode::FileReadError,
+            return std::unexpected(Error{
+                      ErrorCode::FileReadError,
                       std::format("failed to read configuration file: '{}'",
                                   file_path) });
         }
@@ -92,8 +95,8 @@ namespace ecas::application {
             }
         }
         if (!result) {
-            return std::unexpected(types::Error{
-                      types::ErrorCode::DataParseError,
+            return std::unexpected(Error{
+                      ErrorCode::DataParseError,
                       std::format(
                                 "failed to parse MBP configuration file: '{}'",
                                 file_path),
@@ -106,8 +109,13 @@ namespace ecas::application {
     export ConfigLoader
     make_mbp_loader() {
         return [](const std::filesystem::path& path)
-                         -> std::expected<types::MbpConfig, types::Error> {
-            return load_mbp_config(path.string());
+                         -> std::expected<ConfigVariant, Error> {
+            auto result{ load_mbp_config(path.string()) };
+            if (!result) {
+                return std::unexpected(std::move(result.error()));
+            }
+            return ConfigVariant(std::in_place_type<MbpConfig>,
+                                 std::move(*result));
         };
     }
 

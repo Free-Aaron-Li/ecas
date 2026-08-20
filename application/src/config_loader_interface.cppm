@@ -29,17 +29,17 @@ export module application.config_loader_interface;
 import foundation.types;
 
 namespace ecas::application {
+    using foundation::types::ConfigVariant;
     using foundation::types::Error;
-    using foundation::types::MbpConfig;
 
     /**
-     * @brief 配置加载器类型：接受文件路径，返回 MbpConfig 或错误链
+     * @brief 配置加载器类型：接受文件路径，返回 ConfigVariant 或错误链
      *
      * @note 使用 std::move_only_function 替代 std::function，避免不必要的拷贝，
      * 充分使用 C++23 的移动语义优化。
      */
     export using ConfigLoader
-              = std::move_only_function<std::expected<MbpConfig, Error>(
+              = std::move_only_function<std::expected<ConfigVariant, Error>(
                         const std::filesystem::path&) const>;
 
     export class ConfigLoaderRegistry {

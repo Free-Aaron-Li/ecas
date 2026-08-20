@@ -29,117 +29,70 @@ module;
 export module application.settings;
 
 import foundation.types;
+import application.config_loader_ini;
 
 namespace ecas::application {
+    using foundation::types::Error;
+    using foundation::types::ErrorCode;
+
     export struct ApplicationSettings {
         std::string log_path;         ///< 日志文件路径
         std::string mbp_config_path;  ///< MBP 配置文件路径
     };
 
-    export std::expected<ApplicationSettings, foundation::types::Error>
+    export std::expected<ApplicationSettings, Error>
     load_application_settings() {
-        using foundation::types::Error;
-        using foundation::types::ErrorCode;
-
+        /* 配置文件路径 */
         constexpr std::string_view config_file = "../config/application.cfg";
-        std::ifstream              file(config_file.data());
-        if (!file.is_open()) {
+
+        /* 1. 加载并解析 INI 文件 */
+        auto ini_result{ load_ini_config(config_file) };
+        if (!ini_result) {
+            return std::unexpected(std::move(ini_result.error()));
+        }
+
+        /* 2. 提取 [Path] 节 */
+        const auto& sections{ ini_result->sections };
+        auto        path_it{ sections.find("Path") };
+        if (path_it == sections.end()) {
             return std::unexpected(Error{
-                      ErrorCode::FileNotFound,
-                      std::format("Could not open configuration file: {}",
+                      ErrorCode::MissingRequiredField,
+                      std::format("Missing required section [Path] in {}",
                                   config_file) });
         }
+        const auto& path_kv{ path_it->second };
 
-        ApplicationSettings settings{};
-        std::string         line{};
-        auto                line_num{ 0 };
-
-        /* 获取去除首尾空格的一行 */
-        auto trim = [](const std::string_view str) -> std::string_view {
-            const auto first{ str.find_first_not_of(" \t\r\n") };
-            if (first == std::string_view::npos) {
-                return {};
+        /* 3. 提取各字段 lambda */
+        auto get_value = [&](const std::string_view key)
+                  -> std::optional<std::string> {
+            if (const auto it{ path_kv.find(std::string(key)) };
+                it != path_kv.end()) {
+                return it->second;
             }
-            const auto last{ str.find_last_not_of(" \t\r\n") };
-            return str.substr(first, last - first + 1);
+            return std::nullopt;
         };
 
-        /* 去除值两侧的引号 */
-        auto trim_quotes = [](const std::string_view str) -> std::string_view {
-            if (str.size() >= 2) {
-                const char front{ str.front() };
-                if (const char back{ str.back() };
-                    (front == '"' && back == '"')
-                    || (front == '\'' && back == '\'')) {
-                    return str.substr(1, str.size() - 2);
-                }
-            }
-            return str;
-        };
+        ApplicationSettings settings;
 
-        while (std::getline(file, line)) {
-            ++line_num;
-            auto trimmed{ trim(line) };
-            if (trimmed.empty() || trimmed[0] == '#') {
-                continue;  ///< 忽略空行和注释
-            }
-
-            /* 只取第一个“=”作为键值对分隔符 */
-            auto eq_pos = trimmed.find('=');
-            if (eq_pos == std::string_view::npos) {
-                return std::unexpected(
-                          Error{ ErrorCode::InvalidConfig,
-                                 std::format("Invalid format at line {}: {} in "
-                                             "application.cfg",
-                                             line_num, trimmed) });
-            }
-            auto key{ trim(trimmed.substr(0, eq_pos)) };
-            auto value{ trim(trimmed.substr(eq_pos + 1)) };
-            value = trim_quotes(value);
-
-            if (key.empty()) {
-                return std::unexpected(
-                          Error{ ErrorCode::InvalidConfig,
-                                 std::format("Not has key, invalid format at "
-                                             "line {}: {} in "
-                                             "application.cfg",
-                                             line_num, trimmed) });
-            }
-            if (value.empty()) {
-                return std::unexpected(
-                          Error{ ErrorCode::InvalidConfig,
-                                 std::format("Not has value, invalid format at "
-                                             "line {}: {} in "
-                                             "application.cfg",
-                                             line_num, trimmed) });
-            }
-
-            if (key == "log_path") {
-                settings.log_path = value;
-            } else if (key == "mbp_config_path") {
-                settings.mbp_config_path = value;
-            } else {
-                // 未知键产生警告（需确保日志系统已初始化，但该函数在日志初始化之前调用，因此不能使用
-                // logger::warning） 暂时输出到 stderr 或忽略，但建议在 main
-                // 中捕获并记录
-                // 此处先通过标准错误输出警告，或将警告信息通过返回值传递？
-                // 简单起见，用 std::cerr（但项目未引入
-                // <iostream>，可考虑返回包含警告的 expected） 由于本函数返回
-                // expected，我们无法同时返回警告，可以在调用处（main）处理。
-                // 目前保留 TODO 注释，具体实现可扩展。
-            }
+        /* 4. 获取 log_path */
+        if (auto val = get_value("log_path")) {
+            settings.log_path = std::move(*val);
+        } else {
+            return std::unexpected(Error{
+                      ErrorCode::MissingRequiredField,
+                      "Missing required key 'log_path' in [Path] section" });
         }
 
-        if (settings.log_path.empty()) {
+        /* 5. 获取 mbp_config_path */
+        if (auto val = get_value("mbp_config_path")) {
+            settings.mbp_config_path = std::move(*val);
+        } else {
             return std::unexpected(
                       Error{ ErrorCode::MissingRequiredField,
-                             "Missing required setting \"log_path\"" });
+                             "Missing required key 'mbp_config_path' in [Path] "
+                             "section" });
         }
-        if (settings.mbp_config_path.empty()) {
-            return std::unexpected(
-                      Error{ ErrorCode::MissingRequiredField,
-                             "Missing required setting \"mbp_config_path\"" });
-        }
+
         return settings;
     }
 }  // namespace ecas::application

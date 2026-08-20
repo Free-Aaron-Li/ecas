@@ -23,6 +23,7 @@ module;
 #include <memory>
 #include <source_location>
 #include <string>
+#include <variant>
 #include <vector>
 
 /**
@@ -348,4 +349,39 @@ export namespace ecas::foundation::types {
         std::map<int32_t, RegisterMeta>
                   registerMap;  ///< 寄存器索引到元信息的映射表
     };
+
+    /**
+     * @struct IniConfig
+     * @brief INI 配置文件信息
+     *
+     * 该结构体用于存储从 INI 配置文件中解析得到的配置信息。
+     * INI 文件通常由多个节（section）组成，每个节包含若干键值对。
+     */
+    struct IniConfig {
+        std::map<std::string, std::map<std::string, std::string>> sections;
+    };
+
+    /**
+     * @struct JsonConfig
+     * @brief JSON 配置文件信息
+     *
+     * 该结构体用于存储从 JSON 配置文件中解析得到的配置信息。
+     * JSON 文件支持嵌套结构，可以包含对象、数组等复杂数据类型。
+     *
+     * 当前实现采用简化的键值对映射方式，支持基本的配置存储需求。
+     * 对于更复杂的 JSON 结构解析，建议使用专用的 JSON 库（如 nlohmann/json）。
+     */
+    struct JsonConfig {
+        std::map<std::string, std::string>
+                  data;  ///< 键值对映射表，存储 JSON 配置的扁平化表示
+    };
+
+    /**
+     * @typedef ConfigVariant
+     * @brief 配置文件类型变体，支持多种配置文件格式
+     *
+     * 使用 std::variant 定义一个类型变体，可以容纳不同类型的配置文件信息。
+     * 目前支持 MbpConfig、IniConfig 和 JsonConfig 三种类型。
+     */
+    using ConfigVariant = std::variant<MbpConfig, IniConfig, JsonConfig>;
 }  // namespace ecas::foundation::types

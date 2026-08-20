@@ -23,9 +23,8 @@ module;
 
 #include <expected>  // C++23 std::expected，用于函数错误处理
 #include <filesystem>
-#include <format>   // 格式化输出
-#include <fstream>  // 文件流操作
-#include <string>   // 字符串类型
+#include <format>  // 格式化输出
+#include <string>  // 字符串类型
 
 /**
  * @module application.config_loader_json
@@ -39,21 +38,33 @@ module;
 export module application.config_loader_json;
 
 import application.config_loader_interface;
-import foundation.logger;
 import foundation.types;
 
 namespace ecas::application {
-    namespace types  = foundation::types;
-    namespace logger = foundation::logger;
+    using foundation::types::ConfigVariant;
+    using foundation::types::Error;
+    using foundation::types::ErrorCode;
+    using foundation::types::JsonConfig;
+
+    export std::expected<JsonConfig, Error>
+    load_json_config(const std::filesystem::path& path) {
+        // TODO: 实现 JSON 解析
+        return std::unexpected(
+                  Error{ ErrorCode::UnknownError,
+                         std::format("Not implemented json file: {}",
+                                     path.string()) });
+    }
 
     export ConfigLoader
     make_json_loader() {
-        return []([[maybe_unused]] const std::filesystem::path& path)
-                         -> std::expected<types::MbpConfig, types::Error> {
-            ///< TODO 实现 JSON 解析器
-            ///< 预返回 Error
-            return std::unexpected(
-                      types::Error{ types::ErrorCode::UnknownError });
+        return [](const std::filesystem::path& path)
+                         -> std::expected<ConfigVariant, Error> {
+            auto result{ load_json_config(path.string()) };
+            if (!result) {
+                return std::unexpected(std::move(result.error()));
+            }
+            return ConfigVariant(std::in_place_type<JsonConfig>,
+                                 std::move(*result));
         };
     }
 

@@ -190,9 +190,8 @@ namespace ecas::acquisition {
          *         若 `<CellData>` 节点不存在或解析失败返回包含具体原因的 Error
          */
         [[nodiscard]] std::expected<std::map<int32_t, std::string_view>, Error>
-        parse_cell_data(const pugi::xml_node&          data_node,
-                        std::vector<std::string>* warnings
-                        = nullptr) noexcept {
+        parse_cell_data(const pugi::xml_node&     data_node,
+                        std::vector<std::string>* warnings = nullptr) noexcept {
             std::map<int32_t, std::string_view> name_map{};
             const auto cell_node_data{ data_node.child("CellData") };
             if (!cell_node_data) {
@@ -269,7 +268,7 @@ namespace ecas::acquisition {
          * Error
          */
         [[nodiscard]] static std::expected<MbpConfig, Error>
-        load(const std::string_view         xml_content,
+        load(const std::string_view    xml_content,
              std::vector<std::string>* warning = nullptr) noexcept {
             /* 1. 解析 XML */
             pugi::xml_document doc{};

@@ -22,6 +22,7 @@ module;
 #include <expected>
 #include <fstream>
 #include <string>
+#include <variant>
 
 /**
  * @module application.run
@@ -35,8 +36,8 @@ import application.settings;
 import application.config_loader_interface;
 
 namespace ecas::application {
-    namespace types  = foundation::types;
     namespace logger = foundation::logger;
+    using foundation::types::Error;
 
     /**
      * @brief 运行应用程序的核心业务逻辑
@@ -46,29 +47,36 @@ namespace ecas::application {
      * @param argv 命令行参数数组
      * @return 成功返回 void，失败返回 Error
      */
-    export std::expected<void, types::Error>
+    export std::expected<void, Error>
     run(const ApplicationSettings& settings, const ConfigLoader& config_loader,
         [[maybe_unused]] int argc, [[maybe_unused]] char* argv[]) {
         logger::info("Application started.");
 
         /* 1. 通过接口加载配置 */
-        auto config_result = config_loader(settings.mbp_config_path);
-        if (!config_result) {
-            return std::unexpected(std::move(config_result.error()));
+        auto mbp_config_result = config_loader(settings.mbp_config_path);
+        if (!mbp_config_result) {
+            return std::unexpected(std::move(mbp_config_result.error()));
         }
 
-        /* 2. 配置加载成功，记录简略信息 */
-        const auto& cfg = *config_result;
+        /* 2. 配置加载成功，提取 MbpConfig */
+        const auto& mbp_config_variant = *mbp_config_result;
+        const auto* cfg = std::get_if<foundation::types::MbpConfig>(
+                  &mbp_config_variant);
+        if (!cfg) {
+            return std::unexpected(
+                      Error{ foundation::types::ErrorCode::InvalidConfig,
+                             "Loaded config is not MbpConfig" });
+        }
+
         logger::info(
                   "MBP configuration loaded: Slave={}, Func={}, Addr={}, "
                   "Qty={}",
-                  cfg.slaveId, cfg.function, cfg.address, cfg.quantity);
+                  cfg->slaveId, cfg->function, cfg->address, cfg->quantity);
 
-        for (const auto& [idx, meta]: cfg.registerMap) {
+        for (const auto& [idx, meta]: cfg->registerMap) {
             logger::debug("   Register[{}] = {}", idx, meta.name);
         }
 
-        logger::info("Entering main processing loop...");
         logger::info("Application finished.");
         return {};
     }

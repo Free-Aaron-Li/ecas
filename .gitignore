@@ -76,6 +76,7 @@ smart_pointer.bak/
 doxygen.log
 
 # log
+logs/
 datacollector.log
 
 # Understand
@@ -86,3 +87,4 @@ config/
 
 # AI needs
 txt/
+AI_CONTEXT.md

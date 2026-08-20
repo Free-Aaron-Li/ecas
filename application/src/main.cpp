@@ -23,6 +23,7 @@
 #include <filesystem>
 #include <iostream>
 #include <print>
+#include <variant>
 
 import application.run;
 import foundation.types;
@@ -56,20 +57,20 @@ main(const int argc, char* argv[]) {
     ecas::foundation::logger::LoggerGuard logger_guard{ settings.log_path };
 
     /* 3. 创建配置加载器 */
-    auto loader_result{
+    auto config_loader_result{
         ecas::application::ConfigLoaderRegistry::instance().create(
                   std::filesystem::path(settings.mbp_config_path))
     };
-    if (!loader_result) {
+    if (!config_loader_result) {
         ecas::foundation::logger::error(
                   "Failed to create config loader:\n    {}",
                   ecas::foundation::types::format_error_chain(
-                            loader_result.error()));
+                            config_loader_result.error()));
         return 1;
     }
 
     /* 4. 运行业务 */
-    if (auto result{ ecas::application::run(settings, *loader_result, argc,
+    if (auto result{ ecas::application::run(settings, *config_loader_result, argc,
                                             argv) };
         !result) {
         auto err_str{ ecas::foundation::types::format_error_chain(
