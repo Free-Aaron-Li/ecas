@@ -20,6 +20,7 @@ target_link_libraries(foundation
         PRIVATE
         date::date
         date::date-tz
+        concurrentqueue::concurrentqueue
 )
 
 # 4. 配置包含目录
@@ -37,6 +38,7 @@ target_sources(foundation
         FILES
         ${CMAKE_CURRENT_SOURCE_DIR}/src/types.cppm
         ${CMAKE_CURRENT_SOURCE_DIR}/src/logger.cppm
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/thread_pool.cppm
 )
 
 # 6. 配置编译选项

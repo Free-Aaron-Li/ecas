@@ -1,17 +1,16 @@
 // Copyright (C) 2026 Aaron <communicate_aaron@outlook.com>
 //
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
 //
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU General Public License for more details.
+//     http://www.apache.org/licenses/LICENSE-2.0
 //
-// You should have received a copy of the GNU General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 /**
  * @file run.cppm
@@ -22,6 +21,7 @@ module;
 #include <expected>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <variant>
 
 /**
@@ -34,6 +34,7 @@ import foundation.types;
 import foundation.logger;
 import application.settings;
 import application.config_loader_interface;
+import application.config_wathcer;
 
 namespace ecas::application {
     namespace logger = foundation::logger;
@@ -78,6 +79,31 @@ namespace ecas::application {
         }
 
         logger::info("Application finished.");
+        return {};
+    }
+
+    export std::expected<void, Error>
+    run_with_watcher([[maybe_unused]] const ApplicationSettings& settings,
+                     const ConfigWatcher<foundation::types::MbpConfig>& watcher,
+                     [[maybe_unused]] int argc, [[maybe_unused]] char* argv[]) {
+        logger::info("Application started with config watcher.");
+
+        ///< 主循环实例：每秒答应当前配置的 Slave ID
+        for (;;) {
+            auto cfg = watcher.get();
+            if (cfg) {
+                logger::info(
+                          "MBP configuration loaded: Slave={}, Func={}, "
+                          "Addr={}, "
+                          "Qty={}",
+                          cfg->slaveId, cfg->function, cfg->address,
+                          cfg->quantity);
+            } else {
+                logger::warning("No valid MBP config available.");
+            }
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+            ///< TODO：添加退出条件
+        }
         return {};
     }
 }  // namespace ecas::application
