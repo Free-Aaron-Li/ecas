@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DPRO-66 · 4-20mA → 浓度 换算器</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2129; --line:#2d333b;
+    --fg:#e6edf3; --dim:#8b949e; --accent:#39d3bb; --warn:#e3b341; --err:#f85149; --ok:#3fb950;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:24px 18px 60px;
+    background:var(--bg); color:var(--fg);
+    font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    font-size:15px; line-height:1.6;
+  }
+  .wrap{max-width:900px;margin:0 auto}
+  h1{font-size:20px;margin:0 0 4px;font-weight:600}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:22px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin-bottom:14px}
+  .card h2{font-size:13px;font-weight:600;letter-spacing:.06em;color:var(--accent);margin:0 0 12px;text-transform:uppercase}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px}
+  label{display:block;font-size:12px;color:var(--dim);margin-bottom:5px}
+  input,textarea{
+    width:100%;background:var(--bg);color:var(--fg);
+    border:1px solid var(--line);border-radius:6px;padding:9px 11px;
+    font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:15px;
+  }
+  input:focus,textarea:focus{outline:none;border-color:var(--accent)}
+  textarea{min-height:76px;resize:vertical;font-size:13px;line-height:1.5}
+  .readout{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px}
+  .ro{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:12px 14px}
+  .ro .k{font-size:11px;color:var(--dim);letter-spacing:.05em}
+  .ro .v{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:26px;font-weight:600;margin-top:2px}
+  .ro .u{font-size:13px;color:var(--dim);margin-left:3px;font-weight:400}
+  .ro.hero .v{font-size:38px;color:var(--accent)}
+  .msg{margin-top:12px;padding:9px 12px;border-radius:6px;font-size:13px;display:none}
+  .msg.show{display:block}
+  .msg.ok{background:rgba(63,185,80,.12);border:1px solid rgba(63,185,80,.4);color:var(--ok)}
+  .msg.warn{background:rgba(227,179,65,.12);border:1px solid rgba(227,179,65,.4);color:var(--warn)}
+  .msg.err{background:rgba(248,81,73,.12);border:1px solid rgba(248,81,73,.4);color:var(--err)}
+  table{width:100%;border-collapse:collapse;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:13px}
+  th,td{padding:6px 10px;text-align:right;border-bottom:1px solid var(--line)}
+  th{color:var(--dim);font-weight:500;font-size:11px;letter-spacing:.05em}
+  td:first-child,th:first-child{text-align:left}
+  tbody tr:hover{background:var(--panel2)}
+  .zero td{color:var(--dim)}
+  code{background:var(--panel2);padding:2px 6px;border-radius:4px;font-family:ui-monospace,Consolas,monospace;font-size:13px;color:var(--accent)}
+  .formula{font-family:ui-monospace,Consolas,monospace;font-size:14px;background:var(--panel2);
+    border-left:3px solid var(--accent);border-radius:0 6px 6px 0;padding:10px 14px;margin:10px 0;color:var(--fg)}
+  .hint{font-size:12px;color:var(--dim);margin-top:7px}
+  details summary{cursor:pointer;font-size:13px;color:var(--accent);font-weight:600;letter-spacing:.06em;text-transform:uppercase}
+  details[open] summary{margin-bottom:12px}
+  .anchor{display:flex;gap:16px;flex-wrap:wrap;font-size:13px;color:var(--dim);margin-top:8px}
+  .anchor b{color:var(--fg);font-family:ui-monospace,Consolas,monospace}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>DPRO-66 · 4-20mA → 浓度 换算器</h1>
+  <div class="sub">中盛 AI 模块原始寄存器值 ⇄ 电流(mA) ⇄ 浓度　｜　纯本地计算，不联网、不传数据</div>
+
+  <!-- 参数 -->
+  <div class="card">
+    <h2>① 量程参数</h2>
+    <div class="grid">
+      <div><label>电流下限 I<sub>lo</sub> (mA)</label><input id="ilo" type="number" step="0.001" value="4"></div>
+      <div><label>电流上限 I<sub>hi</sub> (mA)</label><input id="ihi" type="number" step="0.001" value="20"></div>
+      <div><label>浓度下限 C<sub>lo</sub></label><input id="clo" type="number" step="0.001" value="0"></div>
+      <div><label>浓度上限 C<sub>hi</sub></label><input id="chi" type="number" step="0.001" value="100"></div>
+      <div><label>浓度修正偏移 <span style="color:var(--ok)">+</span></label><input id="offset" type="number" step="0.001" value="0.5"></div>
+      <div><label>浓度系数 <span style="color:var(--dim)">×</span></label><input id="gain" type="number" step="0.0001" value="1"></div>
+    </div>
+    <div class="formula" id="formula"></div>
+    <div class="anchor">
+      <span>速查：<b>4000 → <span id="a0"></span></b></span>
+      <span><b>12000 → <span id="a50"></span></b></span>
+      <span><b>20000 → <span id="a100"></span></b></span>
+    </div>
+    <div class="hint">中盛模块的「值 ÷1000 = 电流(mA)」已经固定，跑不掉。要改的只有<b>电流两端各对应多少浓度</b> —— 这个得查浓度计菜单（I4 / I20 设定值）或用两点标定反推。</div>
+  </div>
+
+  <!-- 输入 -->
+  <div class="card">
+    <h2>② 输入（二选一，填哪个算哪个）</h2>
+    <div class="grid">
+      <div style="grid-column:1/-1"><label>原始寄存器值（十进制，例如 12935）</label><input id="raw" type="number" placeholder="12935"></div>
+      <div style="grid-column:1/-1">
+        <label>或：粘贴报文（从「中盛综合测试系统」日志里拷，会自动解析出全部通道并校验 CRC）</label>
+        <textarea id="frame" placeholder="01 04 24 32 87 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 4E 54"></textarea>
+      </div>
+    </div>
+    <div id="msg" class="msg"></div>
+  </div>
+
+  <!-- 结果 -->
+  <div class="card">
+    <h2>③ 换算结果</h2>
+    <div class="readout">
+      <div class="ro hero"><div class="k">浓度</div><div class="v"><span id="oC">—</span></div></div>
+      <div class="ro"><div class="k">电流</div><div class="v"><span id="oI">—</span><span class="u">mA</span></div></div>
+      <div class="ro"><div class="k">原始值</div><div class="v" style="font-size:20px"><span id="oR">—</span></div></div>
+      <div class="ro"><div class="k">12 位 AD 计数</div><div class="v" style="font-size:20px"><span id="oN">—</span></div></div>
+    </div>
+  </div>
+
+  <!-- 多通道 -->
+  <div class="card" id="chCard" style="display:none">
+    <h2>④ 全部通道</h2>
+    <table>
+      <thead><tr><th>通道</th><th>寄存器</th><th>原始值</th><th>电流 mA</th><th>浓度</th></tr></thead>
+      <tbody id="chBody"></tbody>
+    </table>
+    <div class="hint">没接线的通道恒为 <code>4000</code>（4.000 mA）。若某通道读数为 <code>0</code>，说明该通道可能被短接或配置有误。</div>
+  </div>
+
+  <!-- 标定 -->
+  <div class="card">
+    <details>
+      <summary>⑤ 两点标定（可选 · 用来定死系数）</summary>
+      <div class="hint" style="margin-bottom:12px">在浓度明显不同的两个时刻，各记一组「模块原始值 ↔ 浓度计显示」，填进来就能反解出真实系数，把模块偏差和端点偏差一起吃掉。</div>
+      <div class="grid">
+        <div><label>点1 · 原始值</label><input id="p1r" type="number" placeholder="12935"></div>
+        <div><label>点1 · 浓度计显示</label><input id="p1c" type="number" step="0.001" placeholder="56.612"></div>
+        <div><label>点2 · 原始值</label><input id="p2r" type="number"></div>
+        <div><label>点2 · 浓度计显示</label><input id="p2c" type="number" step="0.001"></div>
+      </div>
+      <div class="formula" id="calOut">填满两组数即可反解系数。</div>
+    </details>
+  </div>
+
+</div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+
+/* ---------- Modbus CRC16 ---------- */
+function crc16(bytes){
+  let c = 0xFFFF;
+  for (const b of bytes){
+    c ^= b;
+    for (let i = 0; i < 8; i++) c = (c & 1) ? (c >> 1) ^ 0xA001 : c >> 1;
+  }
+  return c & 0xFFFF;
+}
+// CRC 按线序显示（低字节在前），跟串口日志里看到的一致
+function crcWire(v){
+  const lo = (v & 0xFF).toString(16).toUpperCase().padStart(2,"0");
+  const hi = (v >> 8).toString(16).toUpperCase().padStart(2,"0");
+  return lo + " " + hi;
+}
+
+/* ---------- 参数 → 线性映射 ---------- */
+function params(){
+  const ilo = parseFloat($("ilo").value), ihi = parseFloat($("ihi").value);
+  const clo = parseFloat($("clo").value), chi = parseFloat($("chi").value);
+  const gEl = $("gain"), oEl = $("offset");
+  const gain   = (gEl && Number.isFinite(parseFloat(gEl.value))) ? parseFloat(gEl.value) : 1;
+  const offset = (oEl && Number.isFinite(parseFloat(oEl.value))) ? parseFloat(oEl.value) : 0;
+  const ok = [ilo,ihi,clo,chi].every(Number.isFinite) && ihi !== ilo;
+  return {ilo, ihi, clo, chi, gain, offset, ok};
+}
+// 原始值 → 未补偿浓度（纯线性映射）
+function concRaw(raw, p){ return (raw/1000 - p.ilo) / (p.ihi - p.ilo) * (p.chi - p.clo) + p.clo; }
+// 原始值 → ⭐ 最终浓度 = 未补偿 × 系数 + 偏移
+//（09-25 用户定案：在【换算出的浓度】上【多加 0.5 个浓度点】——例 52.345 → 52.845。
+//  ⚠️ 不是 ×1.005，那是「加自身的 0.5%」，只有 +0.26）
+function concOf(raw, p){
+  const g = Number.isFinite(p.gain)   ? p.gain   : 1;
+  const o = Number.isFinite(p.offset) ? p.offset : 0;
+  return concRaw(raw, p) * g + o;
+}
+
+/* ---------- 展示参数派生式 ---------- */
+function renderFormula(){
+  const p = params();
+  if (!p.ok){ $("formula").textContent = "参数不合法（上下限不能相等）"; return; }
+  const span = p.ihi - p.ilo;
+  const rounded = Math.round(p.ilo * 1000);
+  const denom = span * 1000 / (p.chi - p.clo);
+  const gNote = (p.gain === 1 && p.offset === 0) ? "" :
+    `<br><span style="color:var(--ok)">修正：浓度 = 未补偿 × ${p.gain} + ${p.offset}`
+    + `（09-25 定案：在换算出的浓度上多加 ${p.offset} 个浓度点，不是 ×1.005；电流与上面的换算均不变）</span>`;
+  $("formula").innerHTML =
+    `未补偿 = (原始值 − ${rounded}) ÷ ${denom.toFixed(4).replace(/\.?0+$/,"")}` +
+    `<br><span style="color:var(--dim)">即 电流(mA) = 原始值 ÷ 1000，未补偿 = (电流 − ${p.ilo}) ÷ ${span} × ${p.chi - p.clo} + ${p.clo}</span>` +
+    gNote;
+  $("a0").textContent   = fmt(concOf(4000,  p));
+  $("a50").textContent  = fmt(concOf(12000, p));
+  $("a100").textContent = fmt(concOf(20000, p));
+}
+function fmt(x, d = 3){ return Number.isFinite(x) ? x.toFixed(d) : "—"; }
+
+/* ---------- 主换算 ---------- */
+function show(raw, p, quiet){
+  if (!p.ok) return null;
+  const mA = raw / 1000;
+  $("oR").textContent = raw;
+  $("oI").textContent = mA.toFixed(3);
+  $("oN").textContent = Math.round(raw / 20000 * 4095);
+  $("oC").textContent = fmt(concOf(raw, p));
+
+  let kind, text;
+  if (raw === 0){
+    kind = "warn"; text = "读数为 0 —— 该通道没有电流，可能是通道短接、接线脱落，或模块量程档位不对。";
+  } else if (mA < 3.6){
+    kind = "warn"; text = `电流 ${mA.toFixed(3)} mA 低于 3.6 mA —— 4-20mA 制下这是「断线/仪表故障」区，不该按浓度解释。`;
+  } else if (mA > 20.5){
+    kind = "warn"; text = `电流 ${mA.toFixed(3)} mA 超过 20.5 mA —— 已超量程，浓度值不可信。`;
+  } else {
+    kind = "ok";   text = `电流 ${mA.toFixed(3)} mA 落在 4-20mA 正常区间内。`;
+  }
+  if (!quiet) msg(kind, text);
+  return {kind, text};
+}
+function msg(kind, text){
+  const m = $("msg");
+  m.className = "msg show " + kind;
+  m.textContent = text;
+}
+
+/* ---------- 报文解析 ---------- */
+function parseHex(s){
+  s = String(s).replace(/\d{1,2}[:：]\d{2}(?:[:：]\d{2})?(?:\.\d+)?/g, " ");  // 先干掉时间戳
+  s = s.replace(/[^0-9a-fA-F]+/g, "");                                        // 再干掉所有非十六进制字符
+  if (!s.length) throw new Error("没找到任何十六进制字符");
+  if (s.length % 2 !== 0){
+    throw new Error(`十六进制字符个数是奇数（${s.length} 个）—— 是不是把「12.935 mA」这类文字一起粘进来了？请只粘报文`);
+  }
+  const b = [];
+  for (let i = 0; i < s.length; i += 2) b.push(parseInt(s.substr(i, 2), 16));
+  return b;
+}
+
+// 在字节流里按 CRC 搜真正的 Modbus 回复帧（容忍前面混进了「发」的帧或日志杂质）
+function findFrame(b){
+  for (let s = 0; s + 5 <= b.length; s++){
+    const func = b[s + 1];
+    if (func !== 3 && func !== 4) continue;
+    const nb = b[s + 2];
+    if (nb === 0 || nb % 2 !== 0 || nb > 250) continue;
+    if (s + 3 + nb + 2 > b.length) continue;
+    const body = b.slice(s, s + 3 + nb);
+    if (crc16(body) !== (b[s + 3 + nb] | (b[s + 4 + nb] << 8))) continue;
+    return { frame: b.slice(s, s + 3 + nb + 2), skipped: s };
+  }
+  return null;
+}
+
+let lastRegs = null;
+function renderChannels(p){
+  if (!lastRegs){ $("chCard").style.display = "none"; lastRegs = null; return; }
+  const tbody = $("chBody");
+  tbody.innerHTML = "";
+  lastRegs.forEach((r, i) => {
+    const tr = document.createElement("tr");
+    if (r === 0) tr.className = "zero";
+    tr.innerHTML = `<td>CH${i+1}</td><td>${i.toString(16).toUpperCase().padStart(4,"0")}H</td>`
+                 + `<td>${r}</td><td>${(r/1000).toFixed(3)}</td>`
+                 + `<td>${r === 0 ? "—" : fmt(concOf(r, p))}</td>`;
+    tbody.appendChild(tr);
+  });
+  $("chCard").style.display = "";
+}
+function handleFrame(text, p){
+  if (!text.trim()){ $("chCard").style.display = "none"; lastRegs = null; return; }
+  let b;
+  try { b = parseHex(text); }
+  catch(e){ msg("err", "解析失败：" + e.message); $("chCard").style.display = "none"; lastRegs = null; return; }
+
+  if (b.length < 5){
+    msg("err", `只解析到 ${b.length} 个字节，一条完整的 Modbus 回复至少 5 字节。`);
+    $("chCard").style.display = "none"; lastRegs = null; return;
+  }
+
+  const hit = findFrame(b);
+  const frame = hit ? hit.frame : b;        // 搜不到就按原样解释，好把「哪里不对」讲清楚
+  const skipped = hit ? hit.skipped : 0;
+
+  const addr = frame[0], func = frame[1], nbytes = frame[2];
+  if ((func !== 3 && func !== 4) || nbytes === 0 || nbytes % 2 !== 0 || frame.length !== 3 + nbytes + 2){
+    msg("err", `不像标准 Modbus 回复：站号 ${addr}、功能码 ${func}、长度字节 ${nbytes}、共 ${frame.length} 字节。请只粘「回复」那一行（←收）。`);
+    $("chCard").style.display = "none"; lastRegs = null; return;
+  }
+
+  const got  = frame[frame.length - 2] | (frame[frame.length - 1] << 8);
+  const calc = crc16(frame.slice(0, frame.length - 2));
+  const crcOK = got === calc;
+
+  const n = nbytes / 2;
+  const regs = [];
+  for (let i = 0; i < n; i++) regs.push((frame[3 + i*2] << 8) | frame[3 + i*2 + 1]);
+
+  // 多通道表
+  lastRegs = regs;
+  renderChannels(p);
+
+  const note = [];
+  note.push(crcOK
+    ? `✅ CRC 校验通过（${crcWire(got)}）`
+    : `⚠️ CRC 对不上：报文尾部是 ${crcWire(got)}，实算应为 ${crcWire(calc)} —— 大概率没粘全或抄错了`);
+  if (skipped) note.push(`开头跳过了 ${skipped} 个杂质字节`);
+
+  // 有电流的通道自动填进主结果
+  const firstLive = regs.findIndex(r => r > 0);
+  if (firstLive >= 0){
+    $("raw").value = regs[firstLive];
+    const st = show(regs[firstLive], p, true);
+    note.push(`共 ${n} 路，取 CH${firstLive+1} = ${regs[firstLive]} 作主结果`);
+    if (st) note.push(st.text);
+    msg((crcOK && st && st.kind === "ok") ? "ok" : "warn", note.join("　｜　"));
+  } else {
+    note.push(`共 ${n} 路全为 0 —— 没有任何通道读到电流`);
+    msg("warn", note.join("　｜　"));
+  }
+}
+
+/* ---------- 两点标定 ---------- */
+function renderCal(){
+  const r1 = parseFloat($("p1r").value), c1 = parseFloat($("p1c").value);
+  const r2 = parseFloat($("p2r").value), c2 = parseFloat($("p2c").value);
+  const el = $("calOut");
+  if (![r1,c1,r2,c2].every(Number.isFinite) || r1 === r2){
+    el.textContent = "填满两组数即可反解系数。";
+    return;
+  }
+  const a = (c2 - c1) / (r2 - r1);
+  const b = c1 - a * r1;
+  const pNow = params();
+  const pRaw = Object.assign({}, pNow, {gain: 1, offset: 0});   // 标定对照用未补偿值
+  const dev = concRaw(r1, pRaw) * pNow.gain + pNow.offset - c1;
+  el.innerHTML = `实测系数：<code>浓度 = ${a.toFixed(6)} × 原始值 ${b >= 0 ? "+" : "−"} ${Math.abs(b).toFixed(3)}</code>`
+               + `<br><span style="color:var(--dim)">对照当前参数算出的点1：${fmt(concOf(r1, pNow))}，浓度计显示 ${c1}，`
+               + `偏差 <b style="color:var(--warn)">${dev >= 0 ? "+" : ""}${dev.toFixed(3)}</b></span>`;
+}
+
+/* ---------- 事件 ---------- */
+["ilo","ihi","clo","chi","gain","offset"].forEach(id => $(id).addEventListener("input", () => {
+  renderFormula();
+  const r = parseFloat($("raw").value);
+  if (Number.isFinite(r)) show(r, params());
+  renderChannels(params());
+}));
+$("raw").addEventListener("input", () => {
+  const r = parseFloat($("raw").value);
+  if (Number.isFinite(r)) show(r, params());
+  else { $("oR").textContent = $("oI").textContent = $("oC").textContent = $("oN").textContent = "—";
+         $("msg").className = "msg"; }
+});
+$("frame").addEventListener("input", () => handleFrame($("frame").value, params()));
+["p1r","p1c","p2r","p2c"].forEach(id => $(id).addEventListener("input", renderCal));
+
+renderFormula(); renderCal();
+</script>
+</body>
+</html>

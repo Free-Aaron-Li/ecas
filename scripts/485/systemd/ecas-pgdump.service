@@ -1,0 +1,12 @@
+[Unit]
+Description=ECAS PostgreSQL 每日备份（pg_dump + 校验 + 30 天轮转）
+After=postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/root/ecas/scripts/ecas_pgdump.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6

@@ -1,0 +1,11 @@
+[Unit]
+Description=ECAS 看门狗（每 5 分钟检查一次）
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Unit=ecas-healthcheck.service
+
+[Install]
+WantedBy=timers.target

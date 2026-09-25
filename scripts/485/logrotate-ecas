@@ -1,0 +1,12 @@
+# ECAS 日志轮转（装到 /etc/logrotate.d/ecas）
+# copytruncate：监视脚本是 `>>` 追加写、不重开文件，必须用 copytruncate 才不会写丢
+/root/ecas/logs/*.log {
+    weekly
+    rotate 8
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su root root
+}

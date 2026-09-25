@@ -1,0 +1,12 @@
+[Unit]
+Description=ECAS PostgreSQL 每日备份（每天 03:30，错过就补跑）
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+# 服务器当时没开着 / 关机了，开机后补跑一次
+Persistent=true
+RandomizedDelaySec=300
+Unit=ecas-pgdump.service
+
+[Install]
+WantedBy=timers.target

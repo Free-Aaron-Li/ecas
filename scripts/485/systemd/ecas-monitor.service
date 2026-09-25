@@ -1,0 +1,36 @@
+[Unit]
+Description=ECAS 浓度计监视（MQTT → CSV → PostgreSQL）
+Documentation=file:/root/README.md
+After=network-online.target mosquitto.service postgresql.service
+Wants=network-online.target mosquitto.service postgresql.service
+# 连续快速失败就停下（真出问题别无限重连把日志刷爆）—— 注意这个键必须写在 [Unit] 段
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=root
+# 显式指定，别依赖 HOME（systemd 环境的 HOME 不一定有）
+Environment=PGPASSFILE=/root/.pgpass
+# ⭐ 口令用 systemd 本机密钥加密存放，运行时才解密到 /run/credentials/（tmpfs 仅 root 可读）
+#    明文口令不落盘；重新生成：printf '%s\n' '<新口令>' | systemd-creds encrypt --name=mqtt-pass \
+#        --with-key=host - /root/ecas/credentials/mqtt-pass.cred
+LoadCredentialEncrypted=mqtt-pass:/root/ecas/credentials/mqtt-pass.cred
+ExecStart=/root/ecas/scripts/monitor-service.sh
+
+Restart=always
+RestartSec=10
+
+StandardOutput=append:/root/ecas/logs/dpro66_monitor.log
+StandardError=append:/root/ecas/logs/dpro66_monitor.log
+
+# 只加**不会挡住 /root** 的加固项（ProtectHome 会让 /root 不可读，绝不能用）
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,28 @@
+[Unit]
+Description=ECAS 浓度计只读接口 + 看板（127.0.0.1:8080）
+Documentation=file:/root/README.md
+After=network-online.target postgresql.service
+Wants=network-online.target postgresql.service
+
+[Service]
+Type=simple
+User=root
+Environment=PGPASSFILE=/root/.pgpass
+Environment=PYTHONUNBUFFERED=1
+WorkingDirectory=/root/ecas/app
+ExecStart=/usr/bin/python3 /root/ecas/app/api.py
+
+Restart=always
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+
+[Install]
+WantedBy=multi-user.target
