@@ -142,9 +142,9 @@ def test_报警上下限反解(client: TestClient, with_token: str) -> None:
     for key in ("low", "high"):
         back = convert.raw_to_conc(round(convert.conc_to_raw(alarms[key], settings)), settings)
         assert back == pytest.approx(alarms[key], abs=0.01), f"{key} 反解不互逆"
-    # 现役占位值 40/60 且补偿为加性 +0.3 ⇒ raw = 4000 + (conc - 0.3) * 160
-    assert alarms["low_raw"] == 10352  # 4000 + (40 - 0.3) * 160
-    assert alarms["high_raw"] == 13552  # 4000 + (60 - 0.3) * 160
+    # 现役占位值 40/60 且补偿为加性 +0.48 ⇒ raw = 4000 + (conc - 0.48) * 160
+    assert alarms["low_raw"] == 10323  # 4000 + (40 - 0.48) * 160 = 10323.2
+    assert alarms["high_raw"] == 13523  # 4000 + (60 - 0.48) * 160 = 13523.2
 
 
 def test_汇总带越限计数(client: TestClient, with_token: str) -> None:

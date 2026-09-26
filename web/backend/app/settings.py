@@ -1,6 +1,6 @@
 """ECAS 后端配置。
 
-补偿口径与云端 `scripts/485/app/config.py` 保持一致：**浓度 = 未补偿 + 加性 0.3 个点**
+补偿口径与云端 `scripts/485/app/config.py` 保持一致：**浓度 = 未补偿 + 加性 0.48 个点**（2026-09-26 现场标定）
 （2026-09-26 先生定案；不是 ×1.003）。
 
 安全约定：本地开发用 Homebrew PostgreSQL 的 trust 认证（local / 127.0.0.1 / ::1），
@@ -24,8 +24,10 @@ class Settings(BaseSettings):
     c_hi: float = 100.0
 
     # —— 补偿（add=加性偏移，mul=乘性百分比）——
+    # ⭐ 现场标定值：2026-09-26 15:40 先生给出 7 组「系统采集值 vs 浓度计值」比对，
+    #    已带 +0.3 的系统值仍系统性偏低 0.181（σ=0.012）⇒ 加性偏移 0.3 → 0.48。
     offset_mode: str = "add"
-    offset_conc: float = 0.3
+    offset_conc: float = 0.48
     offset_pct: float = 0.3
 
     # —— 异常阈值（参照 NAMUR NE43）——

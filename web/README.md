@@ -78,7 +78,7 @@ bash web/scripts/sync-from-cloud.sh     # 云端 ecas 库 → 本机 ecas_dev（
 - 报警上下限来自 `ECAS_ALARM_LOW` / `ECAS_ALARM_HIGH`（默认 **40.0 / 60.0，是占位值**，
   等工艺给定真实范围；`ECAS_ALARM_LOW=50 ECAS_ALARM_HIGH=52` 这样就能临时试越限效果）。
 - 后端把浓度阈值**反解成 raw 判据**（`convert.conc_to_raw`），与正向换算共用一处：
-  `low_raw = 10352`、`high_raw = 13552`（= `4000 + (conc − 0.3) × 160`）。
+  `low_raw = 10323`、`high_raw = 13523`（= `4000 + (conc − 0.48) × 160`，补偿 2026-09-26 现场标定为 +0.48）。
    `/api/params` 返回 `alarms{low,high,low_raw,high_raw,custom,default_low,default_high}`，
   前端画 `ReferenceLine`（**下限红、上限黄**，`ifOverflow="extendDomain"` 以免线落在数据域外被 recharts 丢掉）。
 - 越限计数 `n_below_alarm` / `n_above_alarm` **只在有效区间内统计**，且

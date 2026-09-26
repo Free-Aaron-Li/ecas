@@ -253,9 +253,9 @@ def test_自定义上下限落库并生效(client: TestClient, env) -> None:
     body = resp.json()
     assert body["custom"] is True
     assert body["low"] == 45 and body["high"] == 55
-    # 反解出的 raw 判据跟着变（45 → 4000 + (45-0.3)*160 = 11152）
-    assert body["low_raw"] == 11152
-    assert body["high_raw"] == 12752
+    # 反解出的 raw 判据跟着变（45 → 4000 + (45-0.48)*160 = 11123）
+    assert body["low_raw"] == 11123
+    assert body["high_raw"] == 12723
     # 落库了 ⇒ 直接再读一次还是自定义值（服务重启也还在）
     assert alarms.effective_alarms(pool, settings)["low"] == 45
 

@@ -55,7 +55,7 @@ def test_根路径按前端产物是否存在分流(client: TestClient) -> None:
 def test_params_是现役口径(client: TestClient) -> None:
     body = client.get("/api/params").json()
     assert body["offset_mode"] == "add"
-    assert body["offset_conc"] == 0.3
+    assert body["offset_conc"] == 0.48
     assert body["thresholds"] == {"break_low": 3600, "over_high": 20500}
 
 
@@ -74,7 +74,7 @@ def test_readings_带换算字段且倒序(client: TestClient) -> None:
     for item in body["items"]:
         assert set(item) >= {"ts", "model", "raw", "ma", "conc_raw", "conc", "status"}
         assert item["ma"] == pytest.approx(round(item["raw"] / 1000, 3))
-        assert item["conc"] == pytest.approx(round(item["conc_raw"] + 0.3, 3))
+        assert item["conc"] == pytest.approx(round(item["conc_raw"] + 0.48, 3))
     ts = [i["ts"] for i in body["items"]]
     assert ts == sorted(ts, reverse=True)
 
@@ -98,4 +98,4 @@ def test_websocket_推一条(client: TestClient) -> None:
     with client.websocket_connect("/ws/readings") as ws:
         first = ws.receive_json()
         assert first["model"] and isinstance(first["raw"], int)
-        assert first["conc"] == pytest.approx(round(first["conc_raw"] + 0.3, 3))
+        assert first["conc"] == pytest.approx(round(first["conc_raw"] + 0.48, 3))
