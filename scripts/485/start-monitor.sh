@@ -15,7 +15,8 @@ if [[ -z "${MQTT_PASS:-}" ]]; then
     echo "用法：printf '%s\\n' 'MQTT口令' | bash $0" >&2
     exit 2
 fi
-export MQTT_PASS MQTT_USER=ecas
+# 默认用**只读**的采集账号（ACL 里 ecas-monitor 只有 topic read dpro66）
+export MQTT_PASS MQTT_USER="${MQTT_USER:-ecas-monitor}"
 
 LOG=/root/ecas/logs/dpro66_monitor.log
 CSV=/root/ecas/data/dpro66_readings.csv

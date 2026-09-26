@@ -20,7 +20,9 @@ if [[ -z "${MQTT_PASS:-}" ]]; then
     echo "用法：printf '%s\\n' 'MQTT口令' | bash $0" >&2
     exit 2
 fi
-export MQTT_PASS MQTT_USER="${MQTT_USER:-ecas}"
+# 默认用**只写**的现场账号（ACL 里 dpro66-dtu 只有 topic write dpro66）
+# 别再用管理账号 ecas —— 现役口令只存在加密卷里，脚本不该依赖它
+export MQTT_PASS MQTT_USER="${MQTT_USER:-dpro66-dtu}"
 
 RAW="${RAW:-12345}"
 MODEL="${MODEL:-DPRO-66}"
