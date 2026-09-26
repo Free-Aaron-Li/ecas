@@ -585,6 +585,13 @@ systemctl enable --now sshguard
 > `admin_username` / `admin_password`（卷备份 `mqtt.toml.bak-20260926-150805`）；
 > 随后「拿卷里的值真连」复验：`admin ✅ / dtu ✅ / monitor ✅ / password_back ❌`，与卷里记录完全一致；
 > 最后才 `shred -uz` 那两份陈旧 `.cred`（`/root/ecas/credentials/` 只剩现役 `mqtt-pass.cred`）。
+>
+> ⚠️ **2026-09-26 17:40 更正：上面这次「已写进加密卷的新键」其实没落盘** —— 卷里从未出现
+> `admin_username`/`admin_password`，服务器暂存文件也没留 ⇒ **指纹 `52be21d25462` 的值丢失**（只剩 passwd 哈希）。
+> 17:33 / 17:36 重新轮换并**真正写卷 + 回读指纹核对**：`ecas-monitor` = `5254449f050c`、`ecas` = `146ef7a1bd7c`
+> （`ecas-monitor` 新口令 `rc=0`、旧值 `rc=5`；`ecas` 新口令 `rc=0`）；卷内 `README.md` 指纹表与轮换史同步更正。
+> 另修 `/etc/mosquitto/passwd` 属主 = `mosquitto:mosquitto 640`（broker 日志自己的要求）。
+> 🎓 **追加教训：「写进权威副本」的完成判据是"回读并比对指纹"，不是"声称写完"**。
 > 🎓 顺序教训：**先确认新口令落进权威副本并复验通过，再删旧副本** —— 反过来就会把唯一的应急账号口令删掉。
 >
 > ⚠️ 这种核对**必然产生 `not authorised`**：先 `systemctl stop ecas-mqtt-watch.timer`，核完把
@@ -863,7 +870,7 @@ web/scripts/sync-from-cloud.sh    # ssh + pg_dump → 本地 ecas_dev（--clean 
 | `StartLimitIntervalSec` 被拒 | 它属于 `[Unit]`，不是 `[Service]` | 挪到 `[Unit]` |
 | 服务反复重启被限流后不再起 | 触发 `StartLimitBurst` | `systemctl reset-failed <unit>` 再 start |
 | uvicorn 日志里出现明文令牌 | 访问日志打印查询串 | 加 `--no-access-log`；轮换令牌 + 清 journal |
-| 采集脚本 `ps` 里能看到 MQTT 口令 | 口令作为 **argv** 传给 `mosquitto_sub` | 已换**只读** `ecas-monitor`（泄露也只能读）；彻底修 = 改环境变量传递（待办） |
+| 采集脚本 `ps` 里能看到 MQTT 口令 | 口令作为 **argv** 传给 `mosquitto_sub` | 已轮换口令 + 换**只读** `ecas-monitor`（泄露也只能读）；⚠️ `mosquitto_sub 2.0.18` 无「从文件读口令」选项（`--help` 已核）⇒ 彻底修 = 换 `paho-mqtt` Python 订阅（待办） |
 | 本机跑运维脚本直接"没反应/早退" | `stat -c %s` 是 **GNU 专有**，BSD/macOS 不支持 | 用 `wc -c < file` 取大小 |
 | 时间戳打印成字面 `:z` | BSD `date` 不支持 `%:z` | `ts=$(date '+%F %T%:z'); [[ "$ts" == *:z ]] && ts=$(date '+%F %T%z')` |
 | 脚本在本机报 `mkdir: /root: Operation not permitted` | 硬编码 `/root` 路径 | 用 `$(dirname "$STATE")`，并把建目录放到 `--show` 早退**之后** |
@@ -1026,10 +1033,12 @@ web/scripts/sync-from-cloud.sh    # ssh + pg_dump → 本地 ecas_dev（--clean 
 ### 12.2 待办清单
 
 **立即可做（技术侧）**
-- [ ] **ACL 收紧 mosquitto**（`ecas` 只写 `dpro66`）
-- [ ] **轮换 MQTT 口令**为随机长口令
+- [x] **ACL 收紧 mosquitto**（2026-09-26：`ecas`/DTU 只写 `dpro66`、采集器只读，默认拒绝）
+- [x] **轮换 MQTT 口令**为随机长口令（2026-09-26 17:33 `ecas-monitor`、17:36 `ecas`；DTU 侧 `dpro66-dtu` 未动）
 - [ ] **冒名检测**（未知 ClientID / 来源 IP 突变 / 节拍异常 → 报警事件）
-- [ ] `ecas-monitor` 口令从 argv 改环境变量
+- [ ] `ecas-monitor` 口令从 argv 改环境变量 —— ⚠️ `mosquitto_sub 2.0.18` **无**从文件/环境读口令的选项
+      （`--help` 已核，只有 `-P` / `-L url`），要彻底修需改用 `paho-mqtt` Python 订阅
+      （从 `$CREDENTIALS_DIRECTORY/mqtt-pass` 读）；**待先生决定是否引入依赖**
 - [ ] 数据库备份加**异地副本**
 - [ ] 复查 mosquitto autosave（14:54 后 `grep -c "Error saving in-memory database"` 应停在 46）
 

@@ -840,7 +840,7 @@ FILE_VERSION_FILTER    =
 # DoxygenLayout.xml, Doxygen will parse it automatically even if the LAYOUT_FILE
 # tag is left empty.
 
-LAYOUT_FILE            = doxygen_tools/DoxygenLayout.xml
+LAYOUT_FILE            = scripts/doxygen_tools/DoxygenLayout.xml
 
 # The CITE_BIB_FILES tag can be used to specify one or more bib files containing
 # the reference definitions. This must be a list of .bib files. The .bib
@@ -992,8 +992,9 @@ WARN_LOGFILE           =
 # spaces. See also FILE_PATTERNS and EXTENSION_MAPPING
 # Note: If this tag is empty the current directory is searched.
 
-INPUT                  = . \
-                         doxygen_tools/docs
+# ECAS：INPUT 指向重构后源码 src/（L1–L8 六层），递归扫描（RECURSIVE=YES）
+INPUT                  = src \
+                         scripts/doxygen_tools/docs
 
 # This tag can be used to specify the character encoding of the source files
 # that Doxygen parses. Internally Doxygen uses the UTF-8 encoding. Doxygen uses
@@ -1187,7 +1188,7 @@ INPUT_FILTER           =
 # need to set EXTENSION_MAPPING for the extension otherwise the files are not
 # properly processed by Doxygen.
 
-FILTER_PATTERNS        = *.md="./doxygen_tools/filter.sh" \
+FILTER_PATTERNS        = *.md="./scripts/doxygen_tools/filter.sh" \
                          *.hpp="sed -e 's/==\([^=]*\)==/@mark{\1}/g'" \
                          *.cpp="sed -e 's/==\([^=]*\)==/@mark{\1}/g'"
 
@@ -1211,7 +1212,7 @@ FILTER_SOURCE_PATTERNS =
 # (index.html). This can be useful if you have a project on for instance GitHub
 # and want to reuse the introduction page also for the Doxygen output.
 
-USE_MDFILE_AS_MAINPAGE = doxygen_tools/docs/mainpage.dox
+USE_MDFILE_AS_MAINPAGE = scripts/doxygen_tools/docs/mainpage.dox
 
 # If the IMPLICIT_DIR_DOCS tag is set to YES, any README.md file found in sub-
 # directories of the project's root, is used as the documentation for that sub-
@@ -1421,7 +1422,7 @@ HTML_HEADER            =
 # that Doxygen normally uses.
 # This tag requires that the tag GENERATE_HTML is set to YES.
 
-HTML_FOOTER            = doxygen_tools/footer.html
+HTML_FOOTER            = scripts/doxygen_tools/footer.html
 
 # The HTML_STYLESHEET tag can be used to specify a user-defined cascading style
 # sheet that is used by each HTML page. It can be used to fine-tune the look of
@@ -1451,7 +1452,7 @@ HTML_STYLESHEET        =
 # documentation.
 # This tag requires that the tag GENERATE_HTML is set to YES.
 
-HTML_EXTRA_STYLESHEET  = doxygen_tools/doxygen-awesome.css
+HTML_EXTRA_STYLESHEET  = scripts/doxygen_tools/doxygen-awesome.css
 
 # The HTML_EXTRA_FILES tag can be used to specify one or more extra images or
 # other source files which should be copied to the HTML output directory. Note
@@ -2557,7 +2558,7 @@ SKIP_FUNCTION_MACROS   = YES
 # the path). If a tag file is not located in the directory in which Doxygen is
 # run, you must also specify the path to the tagfile here.
 
-TAGFILES               = doxygen_tools/cppreference-doxygen-web.tag.xml=https://en.cppreference.com/w/
+TAGFILES               = scripts/doxygen_tools/cppreference-doxygen-web.tag.xml=https://en.cppreference.com/w/
 
 # When a file name is specified after GENERATE_TAGFILE, Doxygen will create a
 # tag file that is based on the input files it reads. See section "Linking to
