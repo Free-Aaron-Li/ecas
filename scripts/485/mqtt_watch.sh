@@ -100,7 +100,9 @@ while IFS= read -r line; do
     user=""
     if [[ "$line" =~ u\'([^\']*)\' ]]; then user="${BASH_REMATCH[1]}"; fi
     client_raw="$client"
-    if [[ "$client" =~ ^[0-9A-F]{8}-[0-9A-F]{4}- ]]; then client="<随机 ClientId: $client>"; fi
+    # mosquitto/mosquitto_sub 自己生成的 ClientId 形如 `auto-92F1E0F9-383D-2D06-3C37-03D7B8C2341F`，
+    # 或纯 UUID —— 都要当成「随机 ClientId」，否则本机排障订阅（不写 -i）会刷假告警（2026-09-26 修）。
+    if [[ "$client" =~ ^(auto-)?[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}- ]]; then client="<随机 ClientId: $client>"; fi
 
     if [[ -z "$user" ]]; then
         emit "严重" "匿名连接" "有人以匿名身份连上 MQTT（allow_anonymous 应该已是 false！）" "$ip" "$client" ""

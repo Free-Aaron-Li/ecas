@@ -13,7 +13,7 @@ tags:
   - 踩坑
 created: 2026-09-26
 updated: 2026-09-26
-status: 进行中（DTU 已开 SSL，待把端口从 1883 改成 8883；明文 1883 已收口到回环）
+status: 运行中（DTU 走 8883 明文口；塔石 DTU 实测只能明文，TLS 备用口 8884 未放行；防护靠认证+ACL+最小权限+冒名检测）
 ---
 
 # ECAS 浓度计数据链路 · 部署与踩坑手册
@@ -66,7 +66,7 @@ flowchart LR
     end
 
     subgraph 云["☁️ 腾讯云 124.222.122.146"]
-        D["mosquitto 2.0.18<br/>8883 TLS（DTU 目标口）<br/>1883 仅回环（本机采集器）"]
+        D["mosquitto 2.0.18<br/>8883 明文（DTU 口）<br/>8884 TLS 备用（未放行）<br/>1883 仅回环"]
         E["ecas-monitor.service<br/>mosquitto_sub → psycopg2"]
         F[("PostgreSQL 16<br/>库 ecas<br/>raw_reading(model,ts,raw)")]
         G["ecas-web.service<br/>FastAPI + 托管前端<br/>127.0.0.1:8080"]
@@ -99,7 +99,8 @@ flowchart LR
 | --- | --- | --- | --- | --- |
 | 云 | 22 TCP | sshd | ✅ 安全组放行 | **只认密钥**（`PasswordAuthentication no`）+ sshguard |
 | 云 | 1883 TCP | mosquitto 明文 | ❌ **仅 `127.0.0.1`** | 2026-09-26 15:19 收口，只给本机 `ecas-monitor` 订阅。安全组那条规则可删 |
-| 云 | 8883 TCP | mosquitto TLS | ✅ 已放行 | **DTU 的目标口**：已开 SSL，只差把端口栏从 1883 改成 8883 |
+| 云 | 8883 TCP | mosquitto **明文** | ✅ 已放行 | **现场 DTU 口**：塔石 DTU 实测只会发明文 MQTT（§8.5），安全靠认证 + 主题 ACL + 最小权限 + 冒名检测 |
+| 云 | 8884 TCP | mosquitto TLS | ❌ 未放行 | **备用**：将来有 TLS 能力的设备直接可用（参数已配好，只需安全组放行 + 把 DTU 指过来） |
 | 云 | 5432 TCP | PostgreSQL | ❌ 只绑 `127.0.0.1` | `scram-sha-256`（TCP），本地 socket 走 `peer` |
 | 云 | 8080 TCP | ecas-web（FastAPI） | ❌ 只绑 `127.0.0.1` | 走 SSH 隧道访问；需访问令牌 |
 | 云 | 8888 TCP | BT-Panel 宝塔 | ⛔ 已在安全组拒绝 | 要用就隧道 `ssh -L 8888:127.0.0.1:8888 ecas` |
@@ -294,7 +295,7 @@ raw = 4000 + (浓度 − 0.3) × 160
 | 串口 | 9600 / 8-N-1 |
 | 北向 | MQTT |
 | 服务器地址 | `124.222.122.146`（或域名） |
-| 端口 | **8883**（TLS 口；⚠️ 别填 1883 —— 那是明文口，填错会报 `wrong version number`） |
+| 端口 | **8883**（明文口，DTU 当前使用；⚠️ 别填 1883 —— 那是只绑回环的本机口；8884 是未放行的 TLS 备用口） |
 | ClientID | `dpro66-01` |
 | 用户名 / 口令 | `ecas` / `<见 /etc/mosquitto/passwd，勿写进仓库>` |
 | 推送主题 | **`dpro66`**（单级、最短、纯 ASCII） |
@@ -518,8 +519,9 @@ systemctl enable --now sshguard
 | `allow_anonymous` | **false**（09-25 23:25 完成，非"裸奔"） |
 | `password_file` | `/etc/mosquitto/passwd`（**`root:mosquitto 640`** —— root 属主满足 `mosquitto_passwd` 的未来要求，组 mosquitto 保证降权后 broker 读得到） |
 | `acl_file` | ✅ `/etc/mosquitto/acl.conf`（**默认拒绝**） |
-| 明文口 | `listener 1883 127.0.0.1`（**仅回环**，只给本机采集器；2026-09-26 15:19 收口） |
-| TLS 口 | `listener 8883`（0.0.0.0，DTU 目标口） |
+| 本机口 | `listener 1883 127.0.0.1`（**仅回环**，只给本机采集器；2026-09-26 15:19 收口） |
+| DTU 口 | `listener 8883`（**0.0.0.0，明文** —— 塔石 DTU 只会发明文，2026-09-26 15:22 抓包坐实） |
+| TLS 备用口 | `listener 8884`（0.0.0.0 + cafile/certfile/keyfile，**安全组未放行**） |
 
 三个账号（口令在服务器 `/root/ecas/credentials/mqtt-accounts-20260926.txt`，600，**抄进加密卷后 `shred`**）：
 
@@ -617,6 +619,23 @@ tls_version tlsv1.2
 > - **A 问塔石**：MQTTS 支持吗？不支持的话 **TCP 透传是否支持 SSL**？（若支持，可让 DTU 走 `TCP+SSL`，服务器侧写"TLS + Modbus 主站"接收端，全链路加密）
 > - **B 让塔石云中转**：DTU → 塔石云 → 我们（用 8883/HTTPS 收），需问转发是否支持 MQTTS/HTTPS 输出、是否收费
 > - **C 明文 + 减损**：见 §5.4 的四件事（**✅ 已全部落地**）
+
+> [!failure] ✅ 已定论（2026-09-26 15:22）：DTU 侧**无法** TLS —— 走 C
+> **决定性的判据是抓包**（只盯日志会绕圈）：`tcpdump -i any -nn -A -c 6 "tcp port 8883 and (tcp[13] & 8 != 0)"`
+> 抓到 DTU 在 8883 上发的是**明文 MQTT CONNECT**（`...MQTT...<.  dpro66-01.  dpro66-dtu.  <口令>` —— 用户名口令全裸）。
+> 配合先生反馈的「塔石配置软件无法上传 CA 证书」，结论：**当前固件/工具只能明文**。
+>
+> **最终端口布局**：
+> | 监听 | 协议 | 给谁 | 公网 |
+> | --- | --- | --- | --- |
+> | `127.0.0.1:1883` | 明文 | 本机采集器 `ecas-monitor` | ❌ 仅回环 |
+> | `0.0.0.0:8883` | **明文** | **现场 DTU**（它就是往这里发明文） | ✅ 已放行 |
+> | `0.0.0.0:8884` | TLS | 备用：将来有 TLS 能力的设备（参数已配好） | ❌ **未放行** |
+>
+> 安全基线完全落在应用层（认证 + 主题 ACL + 最小权限账号 + QoS1 去重 + 冒名检测）。
+> **诚实的边界**：DTU 的账号口令在 4G 链路上是明文可见的 —— 被动嗅探门槛高（要在运营商侧抓包），
+> 现实风险是"口令泄漏后有人冒充"，这已由 ACL + 冒名检测覆盖。
+> 若塔石日后给出支持 TLS 的固件/工具：**只需把 8883 与 8884 两块 listener 对调**，DTU 端口不用改。
 
 ### 5.6 冒名检测与看门狗（2026-09-26 已上线）
 
@@ -833,6 +852,9 @@ web/scripts/sync-from-cloud.sh    # ssh + pg_dump → 本地 ecas_dev（--clean 
 | 明文连 8883 报 `Protocol error` | 端口本来就是 TLS 口 | 正常现象，不是故障 |
 | `SSL routines::wrong version number` | **客户端开了 SSL 但端口填的是明文口 1883** | 把 DTU 端口改成 `8883`；与证书无关 |
 | 改了 `listener` 绑定地址却没生效 | `listener` 变更**不支持 SIGHUP 热加载** | 必须 `systemctl restart mosquitto`，再用 `ss -ltn` 眼见为实 |
+| 日志刷 `wrong version number`，但**看不出是哪种方向错** | ① 明文打到 TLS 口 ② TLS 打到明文口 —— **日志无法区分**（两者都报同一句） | **抓包看首字节最省事**：`tcpdump -i any -nn -A -c 6 "tcp port 8883 and (tcp[13] & 8 != 0)"`。看到 `...MQTT...` = 明文；看到 `\x16\x03\x01` = TLS。2026-09-26 用这招坐实**塔石 DTU 只会发明文** |
+| 塔石 DTU 配了 SSL 却怎么都不通 | 其配置软件**无法上传 CA 证书** ⇒ 只能退回明文；且改端口可能顺带把 SSL 开关重置 | 接受明文 + 走应用层加固（本节下方 §8.6）；TLS 参数留给 8884 备用口 |
+| 冒名检测把 `auto-<UUID>` 的 ClientId 报成"未知ClientId" | `mosquitto_sub` 不写 `-i` 时自造 `auto-…` 形式的 ClientId；脚本早期只识别纯 UUID 形式 | 已修：`client_raw` 允许 `auto-` 前缀（`scripts/485/mqtt_watch.sh:105`）。**本机排障订阅请显式 `-i dpro66-monitor`** |
 
 ### 8.6 安全加固
 
@@ -961,7 +983,7 @@ web/scripts/sync-from-cloud.sh    # ssh + pg_dump → 本地 ecas_dev（--clean 
 | 项目 | PROJECT.md 目标 | 当前实际 | 影响 |
 | --- | --- | --- | --- |
 | 数据库 | IoTDB + PostgreSQL 双库（L5） | 只有 PostgreSQL 16 单库 | 时序压缩/长期存储能力未验证 |
-| MQTT 安全 | TLS 1.3 强制 | **8883 TLS 已就绪**（DTU 已开 SSL，待把端口改成 8883）；1883 已收口到回环 | 明文口已不对外，减损措施（ACL/最小权限/去重/冒名检测）全部落地 |
+| MQTT 安全 | TLS 1.3 强制 | ❌ 现场段**只能明文**（塔石 DTU 不支持 TLS、其工具无法上传 CA 证书，2026-09-26 抓包坐实）；8884 为未放行的 TLS 备用口 | 链路可被运营商侧嗅探（门槛高）。应用层减损全部落地：认证 + 主题 ACL + 最小权限账号 + QoS1 去重 + 冒名检测 |
 | 报警外发 | 未定义 | **只在库里记 + 看板显示，没有外发** | 没人盯看板时报警等于没报 |
 | 发布 | 云服务器仅作 MQTT 中转，数据全入本地库 | 数据在云上，本地只做演练 | 先生已明确**暂缓** |
 
@@ -985,7 +1007,8 @@ web/scripts/sync-from-cloud.sh    # ssh + pg_dump → 本地 ecas_dev（--clean 
 - [ ] **DTU 账号 `ecas` → `dpro66-dtu`**（口令见 `服务器:/root/ecas/credentials/mqtt-accounts-20260926.txt`；抄进加密卷后 `shred`）
 - [x] ~~控制台删掉 11012 遗留放行~~（先生已拒绝开放 80/443/8888/**11012**）
 - [ ] DTU 切 TLS 8883（等塔石答复；需上传 `ca.crt`，**绝不发 `ca.key`**）
-- [x] 已将 1883 收回 `127.0.0.1`（2026-09-26 15:19，只留 8883 对外）
+- [x] 已将 1883 收回 `127.0.0.1`（2026-09-26 15:19）
+- [x] 已定论：DTU 侧无法 TLS ⇒ 8883 改明文（DTU 口）、TLS 移到未放行的 8884（2026-09-26 15:22，见 §8.5 抓包判据）
 
 ### 12.3 下次开工前 5 分钟自检
 
