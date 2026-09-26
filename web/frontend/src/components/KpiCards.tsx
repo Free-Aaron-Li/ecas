@@ -1,5 +1,5 @@
 import type { Alarms, Params, Reading } from '../api'
-import { alarmSide, fmtDateTime, fmtNum } from '../api'
+import { alarmSide, fmtDateTime, fmtNum, trimNum } from '../api'
 import { StatusPill } from './StatusPill'
 
 /** 顶部四张 KPI：浓度（主）/ 电流 / 原始值 / 状态与时刻。 */
@@ -26,7 +26,7 @@ export function KpiCards({
   const offsetText =
     params?.offset_mode === 'mul'
       ? `×${(1 + (params?.offset_pct ?? 0) / 100).toFixed(4)}`
-      : `+${fmtNum(params?.offset_conc ?? 0, 1)}`
+      : `+${trimNum(params?.offset_conc ?? 0)}`
 
   // 越限只在「正常」档才有意义（断线/超量程是设备级异常，那条浓度是外推值）
   const side = last.status === '正常' ? alarmSide(last.conc, alarms) : null

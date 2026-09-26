@@ -265,6 +265,24 @@ export function fmtNum(v: number | null | undefined, digits = 3): string {
   return v.toFixed(digits)
 }
 
+/**
+ * 补偿系数这种人看的数字：去掉无意义的尾零。
+ * ⚠️ 别用 fmtNum(v, 1) —— +0.48 会被四舍五入成「+0.5」，看板上就会写着 +0.5 而实际按 +0.48 算。
+ */
+export function trimNum(v: number | null | undefined, digits = 3): string {
+  if (v === null || v === undefined || Number.isNaN(v)) return '—'
+  return String(Number(v.toFixed(digits)))
+}
+
+/** 把现役补偿口径写成一条能直接照抄的公式（如 `conc_raw + 0.48`）。 */
+export function concFormula(params: Params | null): string {
+  if (!params) return 'conc_raw + offset_conc'
+  if (params.offset_mode === 'mul') {
+    return `conc_raw × ${(1 + params.offset_pct / 100).toFixed(4)}`
+  }
+  return `conc_raw + ${trimNum(params.offset_conc)}`
+}
+
 export function fmtAge(seconds: number | null | undefined): string {
   if (seconds === null || seconds === undefined) return '—'
   const s = Math.max(0, Math.round(seconds))

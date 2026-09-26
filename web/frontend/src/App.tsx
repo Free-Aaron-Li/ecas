@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   AuthError,
+  concFormula,
   exportCsvUrl,
   fetchAlarms,
   fetchAuthInfo,
@@ -273,7 +274,7 @@ export default function App() {
 
       <footer className="footer">
         <span>
-          口径 <code>{params?.formula.conc ?? 'conc_raw + offset_conc'}</code> ｜ 未补偿{' '}
+          口径 <code>{concFormula(params)}</code> ｜ 未补偿{' '}
           <code>{params?.formula.conc_raw ?? '(raw - 4000) * 100 / 16000'}</code>
         </span>
         <span>
