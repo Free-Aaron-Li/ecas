@@ -123,7 +123,8 @@ while IFS= read -r line; do
     fi
     if [[ " $DTU_USERS " == *" $user "* ]]; then
         if [[ -n "$last_dtu_ip" && "$ip" != "$last_dtu_ip" ]]; then
-            emit "警告" "DTU来源IP变化" "DTU 账号 ${user} 的来源 IP 从 ${last_dtu_ip} 变成 ${ip}（4G 重播号属正常，频繁变化要警惕）" "$ip" "$client" "$user"
+            # 4G 重播号 ⇒ 每次重连都可能换 IP，属常态：只记「提示」，不当告警（2026-09-26 先生确认降级）
+            emit "提示" "DTU来源IP变化" "DTU 账号 ${user} 的来源 IP 从 ${last_dtu_ip} 变成 ${ip}（4G 重播号属正常）" "$ip" "$client" "$user"
         fi
         last_dtu_ip="$ip"
     fi

@@ -531,7 +531,7 @@ systemctl enable --now sshguard
 
 一条命令落地/查状态：`scripts/485/setup_mqtt_acl.sh`（`--show` / `--dry-run` / `-y` / `--secrets-out FILE` / `--rotate`）。
 
-> [!warning] 凭据清单要对得上（2026-09-26 15:05 实测，记一笔）
+> [!warning] 凭据清单要对得上（2026-09-26 15:05 实测，15:07 已闭环）
 > 用「拿加密卷里的值真连一次」的方式核对三个账号，结果：
 > - ✅ `username=dpro66-dtu` ＋ `password` → 认证通过（现场 DTU 现役）；
 > - ✅ `monitor_username=ecas-monitor` ＋ `monitor_password` → 认证通过（与服务器 `mqtt-pass.cred` 解出的值一致）；
@@ -539,8 +539,15 @@ systemctl enable --now sshguard
 > - ❌ **管理账号 `ecas` 的现役口令不在卷里**（hash 在 09-25 23:43→00:27 被改过）。目前没有服务依赖它，属"应急账号"。
 >   🔎 补查（把三份加密 `.cred` 都解出来真连）：`ecas` 口令**还在服务器上** ——
 >   `/root/ecas/credentials/mqtt-pass.cred.bak-20260926-144406` 指纹 `6edc88b947f4` 能登 `ecas`（✅），
->   而 `old-round4` 的指纹 `96998b77dcff` 与卷里 `password_back` 一致、三个账号都登不上 ⇒ 那是第四轮**已轮换**的旧口令。
->   ⚠️ 所以**别急着 shred 那份 `.bak`**：它现在同时是"旧凭据"和"`ecas` 口令的唯一副本"。
+>  而 `old-round4` 的指纹 `96998b77dcff` 与卷里 `password_back` 一致、三个账号都登不上 ⇒ 那是第四轮**已轮换**的旧口令。
+>  ⚠️ 所以**别急着 shred 那份 `.bak`**：它当时同时是"旧凭据"和"`ecas` 口令的唯一副本"。
+>
+> ✅ **闭环（15:07，先生「按建议处理」）**：`ecas` 用 `mosquitto_passwd` 以 **stdin 方式**重设为 32 位随机口令
+> （指纹 **`52be21d25462`**，旧口令实测 `rc=5` 已失效），新口令已写进加密卷的新键
+> `admin_username` / `admin_password`（卷备份 `mqtt.toml.bak-20260926-150805`）；
+> 随后「拿卷里的值真连」复验：`admin ✅ / dtu ✅ / monitor ✅ / password_back ❌`，与卷里记录完全一致；
+> 最后才 `shred -uz` 那两份陈旧 `.cred`（`/root/ecas/credentials/` 只剩现役 `mqtt-pass.cred`）。
+> 🎓 顺序教训：**先确认新口令落进权威副本并复验通过，再删旧副本** —— 反过来就会把唯一的应急账号口令删掉。
 >
 > ⚠️ 这种核对**必然产生 `not authorised`**：先 `systemctl stop ecas-mqtt-watch.timer`，核完把
 > `mqtt-watch.state` 的 `off` prime 到日志末尾再 `start`，否则会留下"有人在试口令"的假事件（第二轮我漏了，15:04:53 那条就是我自己造的）。
@@ -613,10 +620,12 @@ tls_version tlsv1.2
 | `scripts/485/ecas_healthcheck.sh` | 指纹第 5 段 = 事件行数，有新事件就写 `health.log` |
 
 六条规则：**匿名连接**（严重）、**未知账号**（严重）、**未知 ClientId**（警告，DTU 账号下连随机 UUID 也报）、
-**DTU 来源 IP 变化**（警告）、**口令失败激增**（一轮 ≥3）、**协议错误**（提示）。
+**DTU 来源 IP 变化**（**提示** — 2026-09-26 先生确认降级，因为 4G 重播号会常态换 IP）、
+**口令失败激增**（一轮 ≥3，警告）、**协议错误**（提示）。
 
 > [!important] 为什么要注意「来源 IP 变化」
-> DTU 走 4G，**重播号会换 IP**（实测 `180.108.106.13` → `180.108.106.15`），所以只能告警、**不能做 IP 白名单**。
+> DTU 走 4G，**重播号会换 IP**（实测一天内 `180.108.106.13` → `.15` → `.58` → `.44`），所以只记录、**不能做 IP 白名单**。
+> 因为每次都变属常态，2026-09-26 起这条降级为「提示」级（仍进事件流与 `health.log`，只是不再算警告）。
 
 > [!warning] 一个必须知道的历史数字：**969 次认证失败是我们自己造成的**
 > 2026-09-25 23:25 开启认证后，DTU 仍用旧口令，客户端 `dpro66-01` 每 3 秒重试一次，直到 00:27 才对齐
