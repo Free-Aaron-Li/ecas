@@ -43,12 +43,11 @@ bin/
 # IDE files
 .vscode/
 .idea/
-
-# AI files
-.junie/
+.idea
 
 # CMake
 build/
+build-*/
 cmake-build-*/
 CMakeFiles/
 CMakeCache.txt
@@ -71,13 +70,18 @@ smart_pointer.bak/
 *.bak
 *.bakup
 
-# ai conf && ai test files
+# AI agents / memory
+.agents/
 .ai/
-doxygen.log
+.junie/
+txt/
+AI_CONTEXT.md
+.memsearch/
 
 # log
 logs/
 datacollector.log
+doxygen.log
 
 # Understand
 *.und/
@@ -85,6 +89,13 @@ datacollector.log
 # Config
 config/
 
-# AI needs
-txt/
-AI_CONTEXT.md
+
+# ── Web 前后端（2026-09-26 新增；本地开发栈，不影响 CMake 工作区）──
+web/frontend/node_modules/
+web/frontend/dist/
+web/frontend/.vite/
+web/backend/.venv/
+web/backend/.env
+__pycache__/
+*.py[cod]
+.pytest_cache/
