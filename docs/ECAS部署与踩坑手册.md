@@ -537,6 +537,10 @@ systemctl enable --now sshguard
 > - ✅ `monitor_username=ecas-monitor` ＋ `monitor_password` → 认证通过（与服务器 `mqtt-pass.cred` 解出的值一致）；
 > - ❌ `password_back`（指纹 `96998b77dcff`，跟文件头写的一样）→ **三个账号都登不上**，是改口令前的旧值；
 > - ❌ **管理账号 `ecas` 的现役口令不在卷里**（hash 在 09-25 23:43→00:27 被改过）。目前没有服务依赖它，属"应急账号"。
+>   🔎 补查（把三份加密 `.cred` 都解出来真连）：`ecas` 口令**还在服务器上** ——
+>   `/root/ecas/credentials/mqtt-pass.cred.bak-20260926-144406` 指纹 `6edc88b947f4` 能登 `ecas`（✅），
+>   而 `old-round4` 的指纹 `96998b77dcff` 与卷里 `password_back` 一致、三个账号都登不上 ⇒ 那是第四轮**已轮换**的旧口令。
+>   ⚠️ 所以**别急着 shred 那份 `.bak`**：它现在同时是"旧凭据"和"`ecas` 口令的唯一副本"。
 >
 > ⚠️ 这种核对**必然产生 `not authorised`**：先 `systemctl stop ecas-mqtt-watch.timer`，核完把
 > `mqtt-watch.state` 的 `off` prime 到日志末尾再 `start`，否则会留下"有人在试口令"的假事件（第二轮我漏了，15:04:53 那条就是我自己造的）。
