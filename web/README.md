@@ -154,6 +154,22 @@ cd web/backend && uv run pytest -q        # 61 passed（含真实库冒烟，库
 cd web/frontend && pnpm build             # tsc -b 类型检查 + 构建
 ```
 
+## 七、部署到云服务器（已上线）
+
+后端 + 看板已经部署到采集链路所在的腾讯云服务器上（`systemd` unit `ecas-web.service`，
+只监听 `127.0.0.1:8080`；数据与报警判定都在那边）：
+
+```bash
+web/scripts/deploy-to-cloud.sh                # 构建 → 同步 → uv sync → 重启 → 自检（幂等）
+HOST_ALIAS=ecas web/scripts/deploy-to-cloud.sh --no-build   # 只改后端时
+ssh -L 18080:127.0.0.1:8080 ecas              # 开隧道后浏览器打开 http://127.0.0.1:18080/
+ssh ecas 'grep ECAS_AUTH_TOKEN /root/ecas-web/ecas-web.env' # 取看板令牌
+```
+
+完整说明（首次部署做了什么、令牌轮换、回滚到 `ecas-api`、安全待办）见
+[`../docs/云端部署.md`](../docs/云端部署.md)。部署件就在本目录：`deploy/ecas-web.service`、
+`deploy/cloud.env.example`、`scripts/deploy-to-cloud.sh`。
+
 ## CLion（不影响 C++ 索引）
 
 CLion 是 C++ 工作区，`node_modules` / `.venv` 无需索引。建议在项目视图里

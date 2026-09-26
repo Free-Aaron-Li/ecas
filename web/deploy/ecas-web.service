@@ -1,0 +1,30 @@
+# ECAS 云端后端（随 `web/scripts/deploy-to-cloud.sh` 部署到 /etc/systemd/system/）
+# 装法：install -m 644 web/deploy/ecas-web.service /etc/systemd/system/ && systemctl daemon-reload
+[Unit]
+Description=ECAS 看板后端（FastAPI：接口 + 报警引擎 + 前端静态页）
+After=network-online.target postgresql.service
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/ecas-web/backend
+EnvironmentFile=/root/ecas-web/ecas-web.env
+# --no-access-log：uvicorn 的访问日志会把查询串整条打出来，而 WebSocket/下载链接的令牌就在
+# 查询串里（Authorization 头传不了给 WS）—— 开着等于把令牌写进 journal。应用自己会记
+# "拒绝未授权 WebSocket/Api（来源 IP）"这类日志，够用。
+ExecStart=/root/ecas-web/backend/.venv/bin/python -m uvicorn app.main:app --host ${ECAS_HOST} --port ${ECAS_PORT} --no-access-log
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+
+[Install]
+WantedBy=multi-user.target

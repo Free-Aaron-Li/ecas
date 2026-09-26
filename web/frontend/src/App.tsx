@@ -75,6 +75,19 @@ export default function App() {
     }
   }, [])
 
+  // 直链带令牌（`http://host/?token=xxx`，隧道/发给自己的链接常用）：
+  // 存进 localStorage 后立刻把地址栏里的令牌抹掉（历史记录与复制粘贴都不会漏），
+  // 后面的取数就直接带着它了。没带就不动。
+  useEffect(() => {
+    const url = new URL(window.location.href)
+    const fromUrl = url.searchParams.get('token')
+    if (!fromUrl) return
+    saveToken(fromUrl)
+    setToken(fromUrl)
+    url.searchParams.delete('token')
+    window.history.replaceState(null, '', url.pathname + (url.search || '') + url.hash)
+  }, [])
+
   // 先问后端「要不要令牌」：要，而且本机没有 → 直接弹门（不必等 401）
   useEffect(() => {
     fetchAuthInfo()
