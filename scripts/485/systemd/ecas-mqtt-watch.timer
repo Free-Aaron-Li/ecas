@@ -1,0 +1,11 @@
+[Unit]
+Description=ECAS · MQTT 冒名检测（每 2 分钟扫一次 mosquitto 日志）
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=15s
+Unit=ecas-mqtt-watch.service
+
+[Install]
+WantedBy=timers.target

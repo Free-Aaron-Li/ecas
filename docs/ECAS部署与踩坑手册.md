@@ -511,21 +511,33 @@ systemctl enable --now sshguard
 - [ ] 若要收口宝塔：`ssh -L 8888:127.0.0.1:8888 ecas` 隧道访问（推荐），而不是开公网
 - [ ] ⚠️ **不要**给 22 做来源 IP 限制
 
-### 5.4 mosquitto 认证现状
+### 5.4 mosquitto 认证与主题 ACL（2026-09-26 已收紧）
 
 | 项 | 现状 |
 | --- | --- |
 | `allow_anonymous` | **false**（09-25 23:25 完成，非"裸奔"） |
-| `password_file` | `/etc/mosquitto/passwd`（600，属主 `mosquitto:mosquitto`） |
-| **ACL** | ❌ **没有生效的 ACL** —— 通过认证者可读写任意主题 |
+| `password_file` | `/etc/mosquitto/passwd`（**`root:mosquitto 640`** —— root 属主满足 `mosquitto_passwd` 的未来要求，组 mosquitto 保证降权后 broker 读得到） |
+| `acl_file` | ✅ `/etc/mosquitto/acl.conf`（**默认拒绝**） |
 | 明文口 | `listener 1883`（DTU 在用） |
 | TLS 口 | `listener 8883`（已就绪，DTU 未切） |
 
-> [!tip] 建议的减损三件事（DTU 上不了 TLS 时的兜底）
-> 1. **加 ACL**：把 `ecas` 限成**只能写 `dpro66`**、只读自己的控制主题；
-> 2. **换随机长口令**（DTU 侧改一次即可）；
-> 3. **冒名检测**：未知 ClientID、来源 IP 突变、发布节拍异常 ⇒ 落成报警事件，看板可见。
+三个账号（口令在服务器 `/root/ecas/credentials/mqtt-accounts-20260926.txt`，600，**抄进加密卷后 `shred`**）：
+
+| 账号 | 权限 | 用途 |
+| --- | --- | --- |
+| `ecas` | `read dpro66` + `write dpro66` | 管理 / 应急 |
+| `dpro66-dtu` | `write dpro66` | 现场 DTU（只能发） |
+| `ecas-monitor` | `read dpro66` | 采集器（只能听） |
+
+一条命令落地/查状态：`scripts/485/setup_mqtt_acl.sh`（`--show` / `--dry-run` / `-y` / `--secrets-out FILE` / `--rotate`）。
+
+> [!tip] 减损四件事已全部落地（DTU 上不了 TLS 时的兜底）
+> 1. ✅ **主题 ACL**（默认拒绝，见上表）；
+> 2. ✅ **两个最小权限账号** + 采集器已切到只读 `ecas-monitor`；
+> 3. ✅ **冒名检测** `scripts/485/mqtt_watch.sh`（timer 每 2 分钟，事件进 `health.log` 与 `/root/ecas/logs/mqtt-watch.jsonl`）；
+> 4. ✅ **QoS1 去重**（10 秒窗口，防重传重复行）。
 > 风险量级说明：4G 链路上被动嗅探门槛很高；**更现实的风险是口令泄漏后有人冒充 DTU 发假数据**，所以重点是"能发现被冒名"，不是"防止被偷看"。
+> 还有一个必须知道的实证：加固前裸奔的 1883 **真的被境外扫过**（`go`@5.252.83.218、`iw-76e052`@69.5.169.10、`MqttClient`@65.49.1.52）。
 
 ### 5.5 MQTT over TLS（8883）
 
@@ -573,7 +585,28 @@ tls_version tlsv1.2
 > 三条路径（详见 [[服务器安全加固]] §7.5）：
 > - **A 问塔石**：MQTTS 支持吗？不支持的话 **TCP 透传是否支持 SSL**？（若支持，可让 DTU 走 `TCP+SSL`，服务器侧写"TLS + Modbus 主站"接收端，全链路加密）
 > - **B 让塔石云中转**：DTU → 塔石云 → 我们（用 8883/HTTPS 收），需问转发是否支持 MQTTS/HTTPS 输出、是否收费
-> - **C 明文 + 减损**：见 §5.4 的三件事（**今天就能做**）
+> - **C 明文 + 减损**：见 §5.4 的四件事（**✅ 已全部落地**）
+
+### 5.6 冒名检测与看门狗（2026-09-26 已上线）
+
+| 文件 | 作用 |
+| --- | --- |
+| `scripts/485/mqtt_watch.sh` | 增量扫 `mosquitto.log`，六条规则判冒名/异常 |
+| `scripts/485/systemd/ecas-mqtt-watch.{service,timer}` | 每 2 分钟跑一次（oneshot） |
+| `/root/ecas/state/mqtt-watch.state` | 扫描偏移 `off=` + 记住的 DTU 来源 IP |
+| `/root/ecas/logs/mqtt-watch.jsonl` | 事件流（`ts/level/kind/detail/ip/client/user`） |
+| `scripts/485/ecas_healthcheck.sh` | 指纹第 5 段 = 事件行数，有新事件就写 `health.log` |
+
+六条规则：**匿名连接**（严重）、**未知账号**（严重）、**未知 ClientId**（警告，DTU 账号下连随机 UUID 也报）、
+**DTU 来源 IP 变化**（警告）、**口令失败激增**（一轮 ≥3）、**协议错误**（提示）。
+
+> [!important] 为什么要注意「来源 IP 变化」
+> DTU 走 4G，**重播号会换 IP**（实测 `180.108.106.13` → `180.108.106.15`），所以只能告警、**不能做 IP 白名单**。
+
+> [!warning] 一个必须知道的历史数字：**969 次认证失败是我们自己造成的**
+> 2026-09-25 23:25 开启认证后，DTU 仍用旧口令，客户端 `dpro66-01` 每 3 秒重试一次，直到 00:27 才对齐
+> ⇒ **53 分钟无数据**。另有三次境外匿名连接（`5.252.83.218` / `69.5.169.10` / `65.49.1.52`）发生在加固前
+> ——裸奔的 1883 确实被扫到过。**改口令的顺序永远是：先服务器、后 DTU。**
 
 ---
 
@@ -724,10 +757,16 @@ web/scripts/sync-from-cloud.sh    # ssh + pg_dump → 本地 ecas_dev（--clean 
 | --- | --- | --- |
 | DTU 连上了但不发数据 | 「推送主题1」是 **`关闭推送`** | 把它设成主题 `dpro66` |
 | 找不到"主题1开关" | 那其实是一个 **QoS 下拉**（qos 0/1/2 表示开启） | qos=关闭推送 就是关 |
-| broker 重启后少了几条数据 | DTU **QoS 0**，broker 侧无持久化会话 | ⚠️ 现场把 QoS 改成 **1**（唯一要做的一步） |
+| broker 重启后少了几条数据 | DTU **QoS 0**，broker 侧无持久化会话 | ✅ 先生已改 **QoS 1**；采集器加 10 秒窗口去重防重传 |
 | `mosquitto_sub` 报 `Timed out` | **不是认证失败** | 认证失败一定含 `not authorised` |
 | 收到数据但解析不出 | payload 格式未实测 | 先 `mosquitto_sub -t 'dpro66' -v` **抓到真 payload 再写解析** |
 | 收不到订阅 | 主题三处不一致 | DTU 推送主题 / 订阅命令 / 脚本默认值**同时改** |
+| 改完口令后 DTU 一直连不上、日志狂刷 `not authorised` | **口令没同步**（先改了服务器） | 顺序必须是**先服务器、后 DTU**；中间那段失败是必然的（实测 09-25 23:34→00:27 共 **969 次**、53 分钟无数据） |
+| QoS 1 之后库里出现重复行 | QoS 1 允许重传 | 采集器 10 秒窗口去重（`DEDUP_SECONDS` / `--dedup N`）；**同一 raw 在窗口外才算新数据** |
+| `mosquitto_pub` 发被 ACL 拒的主题却返回 **0** | QoS 0 没有 ACK，消息被静默丢弃 | **别用退出码验 ACL**；用旁观者订阅看是否收到 |
+| broker 日志反复 `Error saving in-memory database … No such file or directory` | `/var/lib/mosquitto` **目录不存在**，`persistence true` 形同虚设 | `install -d -o mosquitto -g mosquitto -m 0750 /var/lib/mosquitto` + `reload`（不断连接）。⚠️ QoS1 + 持久会话只保订阅端掉线，**保不了 broker 重启** |
+| 冒名检测首次运行报出上百条历史事件 | 全量回放 | 首次运行 **prime 到日志末尾**（`--all` 才回放） |
+| ACL 拒绝在日志里 grep 不到 `Denied` | 默认日志级别不写拒绝 | 用功能验证（旁观者），别靠日志 |
 
 ### 8.3 服务器与 systemd
 
@@ -736,7 +775,11 @@ web/scripts/sync-from-cloud.sh    # ssh + pg_dump → 本地 ecas_dev（--clean 
 | `StartLimitIntervalSec` 被拒 | 它属于 `[Unit]`，不是 `[Service]` | 挪到 `[Unit]` |
 | 服务反复重启被限流后不再起 | 触发 `StartLimitBurst` | `systemctl reset-failed <unit>` 再 start |
 | uvicorn 日志里出现明文令牌 | 访问日志打印查询串 | 加 `--no-access-log`；轮换令牌 + 清 journal |
-| 采集脚本 `ps` 里能看到 MQTT 口令 | 口令作为 **argv** 传给 `mosquitto_sub` | 改环境变量传递（待办） |
+| 采集脚本 `ps` 里能看到 MQTT 口令 | 口令作为 **argv** 传给 `mosquitto_sub` | 已换**只读** `ecas-monitor`（泄露也只能读）；彻底修 = 改环境变量传递（待办） |
+| 本机跑运维脚本直接"没反应/早退" | `stat -c %s` 是 **GNU 专有**，BSD/macOS 不支持 | 用 `wc -c < file` 取大小 |
+| 时间戳打印成字面 `:z` | BSD `date` 不支持 `%:z` | `ts=$(date '+%F %T%:z'); [[ "$ts" == *:z ]] && ts=$(date '+%F %T%z')` |
+| 脚本在本机报 `mkdir: /root: Operation not permitted` | 硬编码 `/root` 路径 | 用 `$(dirname "$STATE")`，并把建目录放到 `--show` 早退**之后** |
+| 换了采集器账号，凭据怎么更新 | 口令由 `systemd-creds` 加密存放 | 备份旧 `.cred` → `printf '%s' "$PW" \| systemd-creds encrypt --name=mqtt-pass --with-key=host - <新>.new` → **自检解密值相等**再 `mv` 覆盖 → `systemctl restart ecas-monitor` |
 
 ### 8.4 PostgreSQL
 
@@ -895,15 +938,17 @@ web/scripts/sync-from-cloud.sh    # ssh + pg_dump → 本地 ecas_dev（--clean 
 - [ ] **冒名检测**（未知 ClientID / 来源 IP 突变 / 节拍异常 → 报警事件）
 - [ ] `ecas-monitor` 口令从 argv 改环境变量
 - [ ] 数据库备份加**异地副本**
+- [ ] 复查 mosquitto autosave（14:54 后 `grep -c "Error saving in-memory database"` 应停在 46）
 
 **等先生决定**
 - [ ] 报警外发通道选哪条（短信 / 微信 / 邮件 / 滴答清单）
-- [ ] 塔石对 TLS 的答复（A/B/C 三选一）
+- [ ] 塔石对 TLS 的答复（A/B/C 三选一；**C 已落地**）
 - [ ] 数据迁回本地库（**已明确暂缓**）
 
 **需要现场/控制台操作**
-- [ ] **DTU QoS 0 → 1**（现场，一次点击）
-- [ ] **控制台删掉 11012 遗留放行**
+- [x] ~~DTU QoS 0 → 1~~（先生 2026-09-26 已改）
+- [ ] **DTU 账号 `ecas` → `dpro66-dtu`**（口令见 `服务器:/root/ecas/credentials/mqtt-accounts-20260926.txt`；抄进加密卷后 `shred`）
+- [x] ~~控制台删掉 11012 遗留放行~~（先生已拒绝开放 80/443/8888/**11012**）
 - [ ] DTU 切 TLS 8883（等塔石答复；需上传 `ca.crt`，**绝不发 `ca.key`**）
 - [ ] 确认后将 1883 收回 `127.0.0.1`（只留 8883 对外）
 

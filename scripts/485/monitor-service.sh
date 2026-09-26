@@ -22,7 +22,8 @@ if [[ -z "$CRED_DIR" || ! -r "$CRED_DIR/mqtt-pass" ]]; then
 fi
 
 # 口令只在内存里过一手，不打印、不落盘
-MQTT_USER="ecas"
+# 最小权限：采集器用 ecas-monitor（ACL 里只有 topic read dpro66），不再借用管理账号 ecas
+MQTT_USER="ecas-monitor"
 MQTT_PASS="$(cat "$CRED_DIR/mqtt-pass")"
 export MQTT_USER MQTT_PASS
 

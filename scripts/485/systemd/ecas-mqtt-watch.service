@@ -1,0 +1,9 @@
+[Unit]
+Description=ECAS · MQTT 冒名检测（谁在连、从哪连、用哪个账号）
+After=mosquitto.service
+Wants=mosquitto.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/root/ecas/scripts/mqtt_watch.sh

@@ -7,6 +7,7 @@
 #   2) 监视服务还活着吗（ecas-monitor.service）
 #   3) DTU 有没有正在被拒（mosquitto 日志里 "Client dpro66-01 ... not authorised"
 #      —— 这一条最关键：它把「口令没同步」和「链路不通」两种故障**分开**了）
+#   4) 冒名检测（mqtt_watch.sh）有没有抓到新事件（未知账号/未知 ClientId/DTU 换 IP…）
 #
 # 日志：/root/ecas/logs/health.log   ｜ 状态：/root/ecas/data/.health-state
 # ============================================================================
@@ -17,6 +18,7 @@ export PGPASSFILE=/root/.pgpass      # systemd 下 HOME 不一定有，显式指
 LOG=/root/ecas/logs/health.log
 STATE=/root/ecas/data/.health-state
 MOSQ_LOG=/var/log/mosquitto/mosquitto.log
+WATCH_LOG=/root/ecas/logs/mqtt-watch.jsonl
 STALE_SEC=600        # 断流判定
 AUTH_WINDOW=600      # 统计窗口（秒）
 CLIENT_HINT='dpro66-01'
@@ -57,8 +59,16 @@ if [[ -r "$MOSQ_LOG" ]]; then
 fi
 if (( authfail > 0 )); then auth_state="failing"; else auth_state="ok"; fi
 
+# ── 4. 冒名检测新事件（mqtt_watch.sh 写的 JSONL 行数）────────────────────
+watch_n=$(wc -l <"$WATCH_LOG" 2>/dev/null || echo 0); watch_n="${watch_n// /}"
+prev_watch=""
+[[ -r "$STATE" ]] && prev_watch="$(cat "$STATE" 2>/dev/null | awk -F'|' '{print $5}')"
+prev_watch="${prev_watch:-0}"
+watch_new=$(( watch_n - prev_watch ))
+(( watch_new < 0 )) && watch_new=0        # 日志被清空过
+
 # ── 组装状态指纹：与上次不同才记录 ───────────────────────────────────────
-fingerprint="${data_state}|${mon}|${sub}|${auth_state}"
+fingerprint="${data_state}|${mon}|${sub}|${auth_state}|${watch_n}"
 prev=""
 [[ -r "$STATE" ]] && prev="$(cat "$STATE" 2>/dev/null)"
 printf '%s\n' "$fingerprint" >"$STATE"
@@ -85,6 +95,10 @@ if [[ "$auth_state" == "failing" ]]; then
     msg="$msg ｜ 🔑 DTU(${CLIENT_HINT}) 最近 $((AUTH_WINDOW/60)) 分钟被拒 ${authfail} 次 —— 十有八九是 DTU 侧口令没同步（用 /Volumes/keys/ecas/mqtt.toml 里的现役口令重填）"
 elif [[ "$prev" == *"failing"* && "$auth_state" == "ok" ]]; then
     msg="$msg ｜ ✅ DTU 认证已恢复正常"
+fi
+if (( watch_new > 0 )); then
+    detail="$(tail -n 1 "$WATCH_LOG" 2>/dev/null | sed 's/.*"level":"\([^"]*\)".*"kind":"\([^"]*\)".*"detail":"\([^"]*\)".*/\1 \2：\3/')"
+    msg="$msg ｜ 🛡 MQTT 冒名检测新增 ${watch_new} 条事件（最新：${detail}）—— 看 /root/ecas/logs/mqtt-watch.jsonl"
 fi
 
 say "$msg"

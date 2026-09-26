@@ -48,6 +48,7 @@
 #
 # 落库（默认开）：把每条数据帧写进 PostgreSQL 的 raw_reading 表
 #           --no-db 关掉  ｜  --db-dsn "-h 127.0.0.1 -U ecas -d ecas" 换连接
+#           --dedup 10 同 raw 在 10 秒内重复出现即判为 QoS1 重传、丢弃不入库（--no-dedup 关）
 #           --model DPRO-66   设备型号（09-26 定案：库里只认「型号」，不建设备台账）
 #           ⭐ 库里**只存三样**：型号 model ｜ 时间 ts ｜ 原始值 raw
 #              mA / 浓度 / 补偿 / 断线超量程判定 全部在**后端**做（见 sql/002_queries.sql 的后参数）
@@ -88,11 +89,14 @@ DURATION=""
 CLIENT_ID="dpro66-monitor"
 PERSIST=1
 QOS="1"
+# ⭐ 09-26：QoS1 重传去重窗口。同一 raw 在此秒数内再次出现 ⇒ 判为重传，丢弃不入库
+DEDUP_SECONDS="${DEDUP_SECONDS:-10}"
 MODE="self"             # self | pipe | replay
 REPLAY_FILE=""
 
 # ----------------------------------------------------------------- 统计
-n_data=0; n_ok=0; n_other=0; n_zero=0; n_bad=0
+n_data=0; n_ok=0; n_other=0; n_zero=0; n_bad=0; n_dup=0
+last_raw=""; last_raw_ep=""                 # 去重用的上一条（raw + epoch）
 n_db_ok=0; n_db_err=0                      # 落库成功 / 失败计数
 cmin=""; cmax=""; csum="0"
 t_first=""; t_last=""
@@ -126,6 +130,8 @@ while (( $# )); do
         --client-id)   CLIENT_ID="$2"; shift 2 ;;
         --no-persist)  PERSIST=0; shift ;;
         -q|--qos)      QOS="$2"; shift 2 ;;
+        --dedup)       DEDUP_SECONDS="$2"; shift 2 ;;
+        --no-dedup)    DEDUP_SECONDS=0; shift ;;
         --pipe)        MODE="pipe"; shift ;;
         --replay)      MODE="replay"; REPLAY_FILE="$2"; shift 2 ;;
         -h|--help)     usage ;;
@@ -235,6 +241,23 @@ handle_line() {
         fi
     fi
 
+    # ---- QoS1 重传去重（09-26 加）----
+    #   DTU 用 QoS1 上传：broker 未收到 PUBACK 会重发，而订阅端的接收时间不同 ⇒
+    #   PK(model,ts,raw) 挡不住（ts 差几秒就是新行）。用「同 raw + 时间窗」判定重传。
+    #   窗口 ${DEDUP_SECONDS}s 远小于上报节拍（约 100s），不会误杀真实的稳定读数。
+    if [[ -n "$raw" && -n "$last_raw" && "$raw" == "$last_raw" && $DEDUP_SECONDS -gt 0 ]]; then
+        local ep_dd
+        if ep_dd="$(ts_to_epoch "$ts")" && [[ -n "$last_raw_ep" ]] \
+           && (( ep_dd - last_raw_ep >= 0 && ep_dd - last_raw_ep < DEDUP_SECONDS )); then
+            n_dup=$(( n_dup + 1 ))
+            if (( n_dup <= 3 )); then
+                printf '%-28s %-8s ↺ 与上一条重复（%ss 内同 raw，按 QoS1 重传丢弃，不入库）\n' \
+                       "$ts" "$raw" "$(( ep_dd - last_raw_ep ))"
+            fi
+            return 0
+        fi
+    fi
+
     if [[ -z "$raw" ]]; then
         n_other=$(( n_other + 1 ))
         printf '%-28s · %s  (%d 字节, %s)\n' "$ts" "$(describe_other "$hex")" "$n" "$hex"
@@ -261,6 +284,7 @@ handle_line() {
     # ---- 上报间隔（数据帧之间的 Δt，用来量化「改参数有没有让上报变快」）----
     local dtxt="—" ep d
     if ep="$(ts_to_epoch "$ts")"; then
+        last_raw="$raw"; last_raw_ep="$ep"      # 供下一次去重比对
         if [[ -n "$t_prev_data" ]]; then
             d=$(( ep - t_prev_data ))
             if (( d >= 0 )); then
@@ -317,7 +341,7 @@ print_summary() {
     echo
     echo "--------------------------------------------------------------------------------"
     if (( n_ok )); then
-        echo "  数据帧 ${n_data} 个（正常 ${n_ok} ｜ 异常 $(( n_data - n_ok ))） ｜ 其它(注册包/心跳等) ${n_other} 条"
+        echo "  数据帧 ${n_data} 个（正常 ${n_ok} ｜ 异常 $(( n_data - n_ok ))） ｜ 其它(注册包/心跳等) ${n_other} 条${n_dup:+ ｜ 去重丢弃 ${n_dup} 条}"
         printf '  浓度 最低 %s ｜ 最高 %s ｜ 平均 %s   （✅ 已补偿：加性 +%s 个点；乘性系数 x%s）\n' \
                "$cmin" "$cmax" "$(awk -v s="$csum" -v n="$n_ok" 'BEGIN{printf "%.3f", s/n}')" "$OFFSET" "$GAIN"
         echo "  区间  ${t_first}  →  ${t_last}"
