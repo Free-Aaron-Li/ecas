@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ECAS 云端看板的常驻 SSH 隧道（macOS LaunchAgent）。
+  装法：
+    cp web/deploy/com.ecas.tunnel.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.ecas.tunnel.plist
+  卸法：
+    launchctl bootout gui/$(id -u)/com.ecas.tunnel
+    rm ~/Library/LaunchAgents/com.ecas.tunnel.plist
+  说明：本机 8080 归本地开发后端，云端看板隧道固定用 18080；KeepAlive 让它在掉线后自动重连，
+  开机/登录即启动 ⇒ 不依赖任何终端窗口，关掉 Ghostty 也不影响。
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.ecas.tunnel</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/ssh</string>
+    <string>-N</string>
+    <string>-o</string><string>BatchMode=yes</string>
+    <string>-o</string><string>ExitOnForwardFailure=yes</string>
+    <string>-o</string><string>ServerAliveInterval=30</string>
+    <string>-o</string><string>ServerAliveCountMax=3</string>
+    <string>-o</string><string>ControlMaster=no</string>
+    <string>-L</string><string>18080:127.0.0.1:8080</string>
+    <string>ecas</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/ecas-tunnel.log</string>
+  <key>StandardErrorPath</key><string>/tmp/ecas-tunnel.err</string>
+</dict>
+</plist>
