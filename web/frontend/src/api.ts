@@ -28,6 +28,9 @@ export interface Summary {
   broken: number
   low: number
   over: number
+  /** 越限行数（只在有效区间里数） */
+  n_below_alarm: number
+  n_above_alarm: number
   conc_avg: number | null
   conc_min: number | null
   conc_max: number | null
@@ -43,6 +46,14 @@ export interface Health {
   last: Reading | null
 }
 
+export interface Alarms {
+  low: number
+  high: number
+  /** 上下限翻译成 raw 之后的判据（后端换算，前端不重算） */
+  low_raw: number
+  high_raw: number
+}
+
 export interface Params {
   model: string
   range: { i_lo: number; i_hi: number; c_lo: number; c_hi: number }
@@ -50,7 +61,9 @@ export interface Params {
   offset_conc: number
   offset_pct: number
   thresholds: { break_low: number; over_high: number }
+  alarms: Alarms
   stale_seconds: number
+  export_limit: number
   formula: Record<string, string>
 }
 
@@ -125,6 +138,22 @@ export const fetchHealth = () => getJSON<Health>('/api/health')
 export const fetchSummary = (hours: number) => getJSON<Summary>(`/api/summary?hours=${hours}`)
 export const fetchReadings = (hours: number, limit = 3000) =>
   getJSON<ReadingsPage>(`/api/readings?hours=${hours}&limit=${limit}`)
+
+/**
+ * 导出 CSV 的下载地址。走浏览器原生下载（`<a download>`），所以**只能**用查询串带令牌
+ * ——`Authorization` 头给不了 `<a>`；非 ASCII 令牌由 `withToken()` 自动改走 `?token=`。
+ */
+export function exportCsvUrl(hours: number): string {
+  return withToken(`/api/export.csv?hours=${hours}`, getToken())
+}
+
+/** 判断某个浓度是否越限（用后端给的报警上下限）。 */
+export function alarmSide(conc: number, alarms: Alarms | null | undefined): 'low' | 'high' | null {
+  if (!alarms) return null
+  if (conc < alarms.low) return 'low'
+  if (conc > alarms.high) return 'high'
+  return null
+}
 
 // —— 展示用格式化 ——
 

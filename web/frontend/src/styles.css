@@ -293,6 +293,70 @@ body {
   height: 300px;
 }
 
+/* 图表右侧的操作区（报警线开关 / 导出 / 区间） */
+.chart-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.chart-actions .header-btn.link {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+
+.header-btn[aria-pressed='false'] {
+  color: var(--fg-dim);
+  opacity: 0.75;
+}
+
+.hint {
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+
+/* 越限标记：下限用琥珀、上限用红（与图表阈值线同色，看一眼就能对上） */
+.alarm-low,
+.alarm-high {
+  font-size: 11px;
+  font-family: var(--sans);
+}
+
+.alarm-low {
+  color: var(--warn);
+}
+
+.alarm-high {
+  color: var(--bad);
+}
+
+.alarm-tag {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  border: 1px solid currentColor;
+}
+
+.alarm-tag.low {
+  color: var(--warn);
+}
+
+.alarm-tag.high {
+  color: var(--bad);
+}
+
+.strip .cell.hot .v {
+  color: var(--warn);
+}
+
+tbody tr.row-alarm td {
+  background: rgba(245, 158, 11, 0.06);
+}
+
 .tooltip {
   background: rgba(15, 23, 42, 0.96);
   border: 1px solid var(--border-strong);

@@ -42,6 +42,9 @@ class Summary(BaseModel):
     broken: int
     low: int
     over: int
+    #: 越限行数（只在有效区间里数）：浓度低于下限 / 高于上限
+    n_below_alarm: int = 0
+    n_above_alarm: int = 0
     conc_avg: float | None = None
     conc_min: float | None = None
     conc_max: float | None = None
@@ -57,6 +60,15 @@ class Health(BaseModel):
     last: Reading | None = None
 
 
+class Alarms(BaseModel):
+    """浓度报警上下限 + 它们翻译成 raw 之后的判据（图表阈值线的唯一来源）。"""
+
+    low: float
+    high: float
+    low_raw: int
+    high_raw: int
+
+
 class Params(BaseModel):
     """当前口径（口径变了，前端不用改代码）。"""
 
@@ -66,7 +78,9 @@ class Params(BaseModel):
     offset_conc: float
     offset_pct: float
     thresholds: dict[str, int]
+    alarms: Alarms
     stale_seconds: int
+    export_limit: int = 20000
     formula: dict[str, str]
 
 

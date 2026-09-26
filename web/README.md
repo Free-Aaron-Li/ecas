@@ -62,11 +62,32 @@ bash web/scripts/sync-from-cloud.sh     # 云端 ecas 库 → 本机 ecas_dev（
 | GET | `/api/params` | 现役口径：量程 / 补偿 / 阈值 / 公式 |
 | GET | `/api/health` | 行数、最新时间、滞后秒数、是否断流 |
 | GET | `/api/readings?hours&limit&offset` | 区间读数（含换算），时间倒序；hours 夹 1..720、limit 夹 1..5000 |
-| GET | `/api/summary?hours` | 区间统计（均值/极值**只算有效区间** 4000~20500） |
+| GET | `/api/summary?hours` | 区间统计（均值/极值**只算有效区间** 4000~20500）+ 越限计数 |
+| GET | `/api/export.csv?hours&limit` | 导出区间原始值 CSV（含换算列 + 口径注释头）；limit 夹 1..20000 |
 | WS | `/ws/readings` | 有新行就推一条（5 秒轮询数据库） |
 
 口径只实现一次（后端），前端只展示：`浓度 = (raw − 4000)/160 + 0.3`，
 断线判据 `raw < 3600`、超量程 `raw > 20500`。
+
+## 四之二、报警阈值与导出（第 2 步）
+
+- 报警上下限来自 `ECAS_ALARM_LOW` / `ECAS_ALARM_HIGH`（默认 **40.0 / 60.0，是占位值**，
+  等工艺给定真实范围；`ECAS_ALARM_LOW=50 ECAS_ALARM_HIGH=52` 这样就能临时试越限效果）。
+- 后端把浓度阈值**反解成 raw 判据**（`convert.conc_to_raw`），与正向换算共用一处：
+  `low_raw = 10352`、`high_raw = 13552`（= `4000 + (conc − 0.3) × 160`）。
+   `/api/params` 返回 `alarms{low,high,low_raw,high_raw}`，前端画 `ReferenceLine`
+  （上限红、下限琥珀，`ifOverflow="extendDomain"` 以免线落在数据域外被 recharts 丢掉）。
+- 越限计数 `n_below_alarm` / `n_above_alarm` **只在有效区间内统计**，且
+  断线/超量程行的浓度是数学外推值，**不参与越限判断**（按 `status` 列判断设备异常）。
+- 导出给的是「能直接存档 / 给工艺看」的文件：UTF-8 **带 BOM**（Excel 不乱码）、
+  `\r\n` 行尾、开头 10 行 `#` 注释写清口径与异常阈值，文件名形如
+  `ecas_DPRO-66_720h_20260926-0957.csv`。
+
+```bash
+curl -s "http://127.0.0.1:8080/api/export.csv?hours=720" | head -14
+curl -sOJ "http://127.0.0.1:8080/api/export.csv?hours=168"   # 带令牌时记得加 ?token=
+```
+
 
 ## 五、访问令牌（对外发布用）
 
@@ -95,10 +116,10 @@ curl --cookie "ecas_token=$T" http://127.0.0.1:8080/api/health        # ③ Cook
 > 非 ASCII 令牌只能走 `?token=`（URL 会 percent-encode）；
 > 令牌比较按 **UTF-8 字节**做常量时间比较，中文令牌也不会 500。
 
-## 五、测试
+## 六、测试
 
 ```bash
-cd web/backend && uv run pytest -q        # 29 passed（含真实库冒烟，库不在则自动跳过）
+cd web/backend && uv run pytest -q        # 43 passed（含真实库冒烟，库不在则自动跳过）
 cd web/frontend && pnpm build             # tsc -b 类型检查 + 构建
 ```
 

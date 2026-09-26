@@ -6,7 +6,8 @@
     GET  /api/params                     当前换算口径（量程/补偿/阈值/公式）
     GET  /api/health                     行数、最新时间、滞后秒数、是否断流
     GET  /api/readings?hours&limit&offset  区间读数（含换算结果），按时间倒序
-    GET  /api/summary?hours              区间统计（均值/极值只算有效区间）
+    GET  /api/summary?hours              区间统计（均值/极值只算有效区间；含越限行数）
+    GET  /api/export.csv?hours&limit     导出原始值 + 换算结果（CSV，带 BOM 与口径注释头）
     WS   /ws/readings                    有新的行就推一条（默认 5 秒轮询数据库）
 
 鉴权（见 `app/auth.py`）：设了 `ECAS_AUTH_TOKEN` 就对 `/api/*` 与 `/ws/readings` 生效，
@@ -25,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,7 +34,7 @@ from pathlib import Path
 import uvicorn
 from fastapi import Depends, FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from psycopg_pool import ConnectionPool
 
@@ -56,12 +58,27 @@ SELECT count(*)::int                                                   AS n,
        count(*) FILTER (WHERE raw < 3600)::int                          AS broken,
        count(*) FILTER (WHERE raw >= 3600 AND raw < 4000)::int          AS low,
        count(*) FILTER (WHERE raw > %(hi)s)::int                        AS over,
+       count(*) FILTER (WHERE raw BETWEEN %(lo)s AND %(hi)s
+                          AND raw < %(alarm_lo)s)::int                  AS n_below_alarm,
+       count(*) FILTER (WHERE raw BETWEEN %(lo)s AND %(hi)s
+                          AND raw > %(alarm_hi)s)::int                  AS n_above_alarm,
        min(raw) FILTER (WHERE raw BETWEEN %(lo)s AND %(hi)s)            AS raw_min,
        max(raw) FILTER (WHERE raw BETWEEN %(lo)s AND %(hi)s)            AS raw_max,
        avg(raw) FILTER (WHERE raw BETWEEN %(lo)s AND %(hi)s)            AS raw_avg
   FROM raw_reading
  WHERE ts >= now() - make_interval(hours => %(hours)s)
 """
+
+#: 导出用：与 /api/readings 同源，但**按时间正序**，且换行/列的组装只在后端做一次
+SQL_EXPORT = """
+SELECT ts, model, raw
+  FROM raw_reading
+ WHERE ts >= now() - make_interval(hours => %(hours)s)
+ ORDER BY ts ASC
+ LIMIT %(limit)s
+"""
+
+CSV_COLUMNS = ("model", "ts", "raw", "ma", "conc_raw", "conc", "status")
 
 #: 前端构建产物（`pnpm build` 之后）挂到根路径；没构建时根路径给出提示
 DIST_DIR = Path(__file__).resolve().parents[2] / "frontend" / "dist"
@@ -162,7 +179,13 @@ def api_summary(request: Request, hours: int = Query(24, description="回看小�
     row = db.fetch_one(
         pool,
         SQL_SUMMARY,
-        {"hours": hours, "lo": int(settings.i_lo * 1000), "hi": settings.over_high},
+        {
+            "hours": hours,
+            "lo": int(settings.i_lo * 1000),
+            "hi": settings.over_high,
+            "alarm_lo": round(convert.conc_to_raw(settings.alarm_low, settings)),
+            "alarm_hi": round(convert.conc_to_raw(settings.alarm_high, settings)),
+        },
     ) or {}
     return schemas.Summary(
         hours=hours,
@@ -171,11 +194,82 @@ def api_summary(request: Request, hours: int = Query(24, description="回看小�
         broken=int(row.get("broken") or 0),
         low=int(row.get("low") or 0),
         over=int(row.get("over") or 0),
+        n_below_alarm=int(row.get("n_below_alarm") or 0),
+        n_above_alarm=int(row.get("n_above_alarm") or 0),
         conc_avg=convert.raw_to_conc(row["raw_avg"], settings) if row.get("raw_avg") is not None else None,
         conc_min=convert.raw_to_conc(row["raw_min"], settings) if row.get("raw_min") is not None else None,
         conc_max=convert.raw_to_conc(row["raw_max"], settings) if row.get("raw_max") is not None else None,
         raw_min=row.get("raw_min"),
         raw_max=row.get("raw_max"),
+    )
+
+
+@app.get("/api/export.csv", dependencies=[Depends(auth.require_auth)])
+def api_export_csv(
+    request: Request,
+    hours: int = Query(24, description="回看小时数，夹在 1..720"),
+    limit: int = Query(20000, description="行数上限，夹在 1..ECAS_EXPORT_ROWS_MAX"),
+) -> Response:
+    """导出区间原始值 + 换算结果（CSV）。
+
+    * 文件头带 `\\ufeff` BOM —— 否则 Excel 打开中文「断线/超量程」会是乱码；
+    * 前若干行是 `#` 注释，写明**当时**的口径、补偿、报警阈值与行数，
+      导出的文件自带口径说明，避免"这份 CSV 是哪个口径算的"说不清；
+    * 断线/超量程行的浓度是数学外推值，注释里明确提醒按 status 列判断。
+    """
+    settings: Settings = request.app.state.settings
+    pool: ConnectionPool = request.app.state.pool
+    hours, limit = clamp(hours, 1, 720), clamp(limit, 1, settings.export_rows_max)
+    rows = db.fetch_all(pool, SQL_EXPORT, {"hours": hours, "limit": limit})
+    params = convert.params(settings)
+    alarms = params["alarms"]
+    now = datetime.now().astimezone()
+
+    def stamp(value: datetime | None) -> str:
+        return value.astimezone().isoformat(timespec="seconds") if value else "无数据"
+
+    lines = [
+        "# ECAS 浓度计原始值导出",
+        f"# 型号: {settings.model_name}",
+        f"# 区间: 最近 {hours} 小时（数据实际覆盖 {stamp(rows[0]['ts']) if rows else '无数据'}"
+        f" ~ {stamp(rows[-1]['ts']) if rows else '无数据'}）",
+        f"# 生成时间: {now.isoformat(timespec='seconds')} ｜ 行数: {len(rows)}",
+        f"# 口径: {params['formula']['ma']} ｜ conc_raw = {params['formula']['conc_raw']}"
+        f" ｜ conc = {params['formula']['conc']}",
+        f"# 补偿: offset_mode={settings.offset_mode} offset_conc={settings.offset_conc}"
+        f" offset_pct={settings.offset_pct}",
+        f"# 浓度报警: 下限 {alarms['low']}（raw < {alarms['low_raw']}）"
+        f" ｜ 上限 {alarms['high']}（raw > {alarms['high_raw']}）",
+        f"# 异常阈值: 断线 raw < {settings.break_low} ｜ 偏低 {settings.break_low}~{int(settings.i_lo * 1000)}"
+        f" ｜ 正常 {int(settings.i_lo * 1000)}~{settings.over_high} ｜ 超量程 raw > {settings.over_high}",
+        "# 注意: 断线/超量程行的 conc 是数学外推值，无物理意义 —— 请按 status 列判断",
+        ",".join(CSV_COLUMNS),
+    ]
+    for row in rows:
+        readings = convert.convert(int(row["raw"]), settings)
+        lines.append(
+            ",".join(
+                [
+                    str(row["model"]),
+                    stamp(row["ts"]),
+                    str(row["raw"]),
+                    f"{readings['ma']:.3f}",
+                    f"{readings['conc_raw']:.3f}",
+                    f"{readings['conc']:.3f}",
+                    readings["status"],
+                ]
+            )
+        )
+
+    slug = re.sub(r"[^A-Za-z0-9._-]", "_", settings.model_name) or "ecas"
+    filename = f"ecas_{slug}_{hours}h_{now.strftime('%Y%m%d-%H%M')}.csv"
+    return Response(
+        content="\ufeff" + "\r\n".join(lines) + "\r\n",
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
     )
 
 

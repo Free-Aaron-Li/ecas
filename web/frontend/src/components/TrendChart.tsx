@@ -8,8 +8,8 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import type { Reading } from '../api'
-import { fmtDateTime, fmtNum } from '../api'
+import type { Alarms, Reading } from '../api'
+import { alarmSide, fmtDateTime, fmtNum } from '../api'
 
 interface Point {
   iso: string
@@ -20,13 +20,23 @@ interface Point {
   status: string
 }
 
-function ChartTooltip({ active, payload }: { active?: boolean; payload?: Array<{ payload: Point }> }) {
+function ChartTooltip({
+  active,
+  payload,
+  alarms,
+}: {
+  active?: boolean
+  payload?: Array<{ payload: Point }>
+  alarms?: Alarms | null
+}) {
   if (!active || !payload?.length) return null
   const p = payload[0].payload
+  const side = alarmSide(p.conc, alarms)
   return (
     <div className="tooltip">
       <div className="t">
         {fmtDateTime(p.iso)} ｜ {p.status}
+        {side && <span className={side === 'high' ? 'alarm-high' : 'alarm-low'}> ｜ 越限</span>}
       </div>
       <div className="row">
         <span className="k">浓度</span>
@@ -50,11 +60,16 @@ export function TrendChart({
   hours,
   average,
   loading,
+  alarms,
+  showAlarms = true,
 }: {
   items: Reading[]
   hours: number
   average: number | null
   loading: boolean
+  /** 报警上下限（浓度）——由后端 `/api/params` 给出，前端不重算 */
+  alarms?: Alarms | null
+  showAlarms?: boolean
 }) {
   const data: Point[] = items
     .filter((r) => r.status !== '断线') // 断线点不是测量值，画进曲线会把 Y 轴拉到负区间
@@ -110,7 +125,35 @@ export function TrendChart({
             domain={['auto', 'auto']}
             tickFormatter={(v: number) => v.toFixed(1)}
           />
-          <Tooltip content={<ChartTooltip />} cursor={{ stroke: '#475569', strokeDasharray: '3 3' }} />
+          <Tooltip content={<ChartTooltip alarms={alarms} />} cursor={{ stroke: '#475569', strokeDasharray: '3 3' }} />
+          {showAlarms && alarms && (
+            <>
+              <ReferenceLine
+                y={alarms.high}
+                ifOverflow="extendDomain"
+                stroke="#ef4444"
+                strokeDasharray="5 3"
+                label={{
+                  value: `上限 ${fmtNum(alarms.high, 1)}`,
+                  fill: '#ef4444',
+                  fontSize: 11,
+                  position: 'insideTopRight',
+                }}
+              />
+              <ReferenceLine
+                y={alarms.low}
+                ifOverflow="extendDomain"
+                stroke="#f59e0b"
+                strokeDasharray="5 3"
+                label={{
+                  value: `下限 ${fmtNum(alarms.low, 1)}`,
+                  fill: '#f59e0b',
+                  fontSize: 11,
+                  position: 'insideBottomRight',
+                }}
+              />
+            </>
+          )}
           {average != null && (
             <ReferenceLine
               y={average}

@@ -33,6 +33,17 @@ class Settings(BaseSettings):
     over_high: int = 20500
     stale_seconds: int = 600
 
+    # —— 报警上下限（浓度，单位与浓度同）——
+    #: ⚠️ 40 / 60 是**占位值**，等工艺给出真实的上下限再改（代码不用动，
+    #: 用 `ECAS_ALARM_LOW` / `ECAS_ALARM_HIGH` 注入即可）；
+    #: 判据由 `convert.conc_to_raw()` 反解成 raw，SQL 与图表共用同一处换算。
+    alarm_low: float = 40.0
+    alarm_high: float = 60.0
+
+    #: 导出 CSV 的最大行数（越界夹住；比 /api/readings 的 5000 更宽松，
+    #: 因为导出是"要整段数据"的用途）
+    export_rows_max: int = 20000
+
     # —— 数据库：本地 unix socket + trust，无口令 ——
     dsn: str = "postgresql://ecas@/ecas_dev?host=/tmp&port=55432"
 

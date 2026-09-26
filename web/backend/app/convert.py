@@ -59,6 +59,20 @@ def raw_to_status(raw: int, s: Any) -> str:
     return NORMAL
 
 
+def conc_to_raw(conc: float, s: Any) -> float:
+    """浓度的反解：浓度 → 原始值。
+
+    报警上下限是**浓度**上的限制，但库里只有 raw（口径可能变），
+    所以 SQL 过滤与图表画线都先经过这里翻译成 raw，保证与正向换算同一处实现。
+    """
+    if getattr(s, "offset_mode", "add") == "mul":
+        conc_raw = conc / (1.0 + s.offset_pct / 100.0)
+    else:
+        conc_raw = conc - s.offset_conc
+    span = (s.i_hi - s.i_lo) * 1000.0
+    return s.i_lo * 1000.0 + (conc_raw - s.c_lo) * span / (s.c_hi - s.c_lo)
+
+
 def convert(raw: int, s: Any) -> dict[str, Any]:
     """一次算全：给前端/接口统一的字段。"""
     return {
@@ -90,7 +104,15 @@ def params(s: Any) -> dict[str, Any]:
         "offset_conc": s.offset_conc,
         "offset_pct": s.offset_pct,
         "thresholds": {"break_low": s.break_low, "over_high": s.over_high},
+        "alarms": {
+            "low": s.alarm_low,
+            "high": s.alarm_high,
+            #: 上下限翻译成 raw（SQL 判据 / 图表阈值线的唯一来源）
+            "low_raw": round(conc_to_raw(s.alarm_low, s)),
+            "high_raw": round(conc_to_raw(s.alarm_high, s)),
+        },
         "stale_seconds": s.stale_seconds,
+        "export_limit": s.export_rows_max,
         "formula": {
             "ma": "raw / 1000",
             "conc_raw": f"(raw - {s.i_lo * 1000:.0f}) * ({s.c_hi} - {s.c_lo}) / (({s.i_hi} - {s.i_lo}) * 1000) + {s.c_lo}",

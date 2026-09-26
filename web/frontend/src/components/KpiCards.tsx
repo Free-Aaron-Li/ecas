@@ -1,9 +1,17 @@
-import type { Params, Reading } from '../api'
-import { fmtDateTime, fmtNum } from '../api'
+import type { Alarms, Params, Reading } from '../api'
+import { alarmSide, fmtDateTime, fmtNum } from '../api'
 import { StatusPill } from './StatusPill'
 
 /** 顶部四张 KPI：浓度（主）/ 电流 / 原始值 / 状态与时刻。 */
-export function KpiCards({ last, params }: { last: Reading | null; params: Params | null }) {
+export function KpiCards({
+  last,
+  params,
+  alarms,
+}: {
+  last: Reading | null
+  params: Params | null
+  alarms?: Alarms | null
+}) {
   if (!last) {
     return (
       <div className="kpis">
@@ -20,6 +28,9 @@ export function KpiCards({ last, params }: { last: Reading | null; params: Param
       ? `×${(1 + (params?.offset_pct ?? 0) / 100).toFixed(4)}`
       : `+${fmtNum(params?.offset_conc ?? 0, 1)}`
 
+  // 越限只在「正常」档才有意义（断线/超量程是设备级异常，那条浓度是外推值）
+  const side = last.status === '正常' ? alarmSide(last.conc, alarms) : null
+
   return (
     <div className="kpis">
       <div className="card kpi primary">
@@ -31,6 +42,13 @@ export function KpiCards({ last, params }: { last: Reading | null; params: Param
         <span className="sub">
           未补偿 {fmtNum(last.conc_raw, 3)} ｜ 补偿 {offsetText}
         </span>
+        {side && (
+          <span className={side === 'high' ? 'alarm-tag high' : 'alarm-tag low'}>
+            {side === 'high'
+              ? `高于报警上限 ${fmtNum(alarms?.high ?? 0, 1)}`
+              : `低于报警下限 ${fmtNum(alarms?.low ?? 0, 1)}`}
+          </span>
+        )}
       </div>
 
       <div className="card kpi">

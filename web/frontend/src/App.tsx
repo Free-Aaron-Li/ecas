@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   AuthError,
+  exportCsvUrl,
   fetchAuthInfo,
   fetchHealth,
   fetchParams,
   fetchReadings,
   fetchSummary,
   fmtAge,
+  fmtNum,
   getToken,
   setToken as saveToken,
 } from './api'
@@ -41,6 +43,7 @@ export default function App() {
   const [authRequired, setAuthRequired] = useState(false)
   const [needToken, setNeedToken] = useState(false)
   const [tokenError, setTokenError] = useState<string | null>(null)
+  const [showAlarms, setShowAlarms] = useState(true)
   const { live, connected } = useLiveReading(token)
 
   // 容器职责：取数与状态，展示交给子组件（presentational）
@@ -174,34 +177,63 @@ export default function App() {
         </div>
       )}
 
-      <KpiCards last={last} params={params} />
+      <KpiCards last={last} params={params} alarms={params?.alarms} />
 
-      <SummaryStrip summary={summary} health={health} />
+      <SummaryStrip summary={summary} health={health} alarms={params?.alarms} />
 
       <section className="card">
         <div className="chart-head">
           <h2 className="card-title" style={{ margin: 0 }}>
             浓度趋势（断线点不画）
           </h2>
-          <div className="tabs" role="group" aria-label="时间区间">
-            {RANGES.map((r) => (
-              <button
-                key={r.hours}
-                type="button"
-                aria-pressed={hours === r.hours}
-                onClick={() => setHours(r.hours)}
-              >
-                {r.label}
-              </button>
-            ))}
+          <div className="chart-actions">
+            <button
+              type="button"
+              className="header-btn"
+              aria-pressed={showAlarms}
+              onClick={() => setShowAlarms((v) => !v)}
+              disabled={!params}
+            >
+              报警线 {showAlarms ? '开' : '关'}
+            </button>
+            <a className="header-btn link" href={exportCsvUrl(hours)} download>
+              导出 CSV（{hours} 小时）
+            </a>
+            <div className="tabs" role="group" aria-label="时间区间">
+              {RANGES.map((r) => (
+                <button
+                  key={r.hours}
+                  type="button"
+                  aria-pressed={hours === r.hours}
+                  onClick={() => setHours(r.hours)}
+                >
+                  {r.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
-        <TrendChart items={chartItems} hours={hours} average={summary?.conc_avg ?? null} loading={loading} />
+        <TrendChart
+          items={chartItems}
+          hours={hours}
+          average={summary?.conc_avg ?? null}
+          loading={loading}
+          alarms={params?.alarms}
+          showAlarms={showAlarms}
+        />
       </section>
 
       <section className="card">
-        <h2 className="card-title">最近读数（最新 {TABLE_ROWS} 条）</h2>
-        <RecentTable rows={rows.slice(0, TABLE_ROWS)} />
+        <div className="chart-head">
+          <h2 className="card-title" style={{ margin: 0 }}>
+            最近读数（最新 {TABLE_ROWS} 条）
+          </h2>
+          <span className="hint">
+            越限判据：{fmtNum(params?.alarms.low, 1)} ~ {fmtNum(params?.alarms.high, 1)} 浓度
+            （raw {params?.alarms.low_raw ?? '—'} ~ {params?.alarms.high_raw ?? '—'}）
+          </span>
+        </div>
+        <RecentTable rows={rows.slice(0, TABLE_ROWS)} alarms={params?.alarms} />
       </section>
 
       <footer className="footer">
@@ -210,8 +242,11 @@ export default function App() {
           <code>{params?.formula.conc_raw ?? '(raw - 4000) * 100 / 16000'}</code>
         </span>
         <span>
-          断线判据 <code>raw &lt; {params?.thresholds.break_low ?? 3600}</code> ｜ 超量程 <code>raw &gt; {params?.thresholds.over_high ?? 20500}</code> ｜
-          断流阈值 <code>{params?.stale_seconds ?? 600} 秒</code> ｜ 30 秒自动刷新 + WebSocket 实时推送
+          报警 <code>浓度 &lt; {fmtNum(params?.alarms.low, 1)}</code> /{' '}
+          <code>浓度 &gt; {fmtNum(params?.alarms.high, 1)}</code>（占位值，等工艺给定） ｜ 断线判据{' '}
+          <code>raw &lt; {params?.thresholds.break_low ?? 3600}</code> ｜ 超量程{' '}
+          <code>raw &gt; {params?.thresholds.over_high ?? 20500}</code> ｜ 断流阈值{' '}
+          <code>{params?.stale_seconds ?? 600} 秒</code> ｜ 30 秒自动刷新 + WebSocket 实时推送
         </span>
       </footer>
     </div>

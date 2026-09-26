@@ -1,9 +1,9 @@
-import type { Reading } from '../api'
-import { fmtDateTime, fmtNum } from '../api'
+import type { Alarms, Reading } from '../api'
+import { alarmSide, fmtDateTime, fmtNum } from '../api'
 import { StatusPill } from './StatusPill'
 
-/** 最近读数明细表（时间倒序，最新在最上）。 */
-export function RecentTable({ rows }: { rows: Reading[] }) {
+/** 最近读数明细表（时间倒序，最新在最上）。越限行在浓度列给出标记。 */
+export function RecentTable({ rows, alarms }: { rows: Reading[]; alarms?: Alarms | null }) {
   if (!rows.length) return <div className="skeleton">暂无读数。</div>
 
   return (
@@ -20,18 +20,28 @@ export function RecentTable({ rows }: { rows: Reading[] }) {
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => (
-            <tr key={`${r.ts}-${r.raw}`}>
-              <td>{fmtDateTime(r.ts)}</td>
-              <td className="num">{r.raw}</td>
-              <td className="num">{fmtNum(r.ma, 3)}</td>
-              <td className="num">{fmtNum(r.conc_raw, 3)}</td>
-              <td className="num">{fmtNum(r.conc, 3)}</td>
-              <td>
-                <StatusPill status={r.status} />
-              </td>
-            </tr>
-          ))}
+          {rows.map((r) => {
+            const side = r.status === '正常' ? alarmSide(r.conc, alarms) : null
+            return (
+              <tr key={`${r.ts}-${r.raw}`} className={side ? 'row-alarm' : undefined}>
+                <td>{fmtDateTime(r.ts)}</td>
+                <td className="num">{r.raw}</td>
+                <td className="num">{fmtNum(r.ma, 3)}</td>
+                <td className="num">{fmtNum(r.conc_raw, 3)}</td>
+                <td className="num">
+                  {fmtNum(r.conc, 3)}
+                  {side && (
+                    <span className={side === 'high' ? 'alarm-high' : 'alarm-low'}>
+                      {side === 'high' ? ' ↑越限' : ' ↓越限'}
+                    </span>
+                  )}
+                </td>
+                <td>
+                  <StatusPill status={r.status} />
+                </td>
+              </tr>
+            )
+          })}
         </tbody>
       </table>
     </div>
