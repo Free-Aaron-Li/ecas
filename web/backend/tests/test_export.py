@@ -104,20 +104,20 @@ def test_列名与行数与_readings_一致(client: TestClient, with_token: str)
     body = fetch_csv(client, token=with_token)
     rows = _data_rows(body)
     header, data = rows[0], rows[1:]
-    assert header == ["model", "ts", "raw", "ma", "conc_raw", "conc", "status"]
+    assert header == ["型号", "时间", "原始值", "电流(mA)", "未补偿浓度", "浓度", "状态"]
 
     page = client.get(f"/api/readings?hours=720&limit=5000&token={with_token}").json()
     assert len(data) == page["count"], "导出行数应等于同区间的读数行数"
 
-    # 每个单元格都能被换算函数复现（抽查前 5 行）
+    # 每个单元格都能被换算函数复现（抽查前 5 行）；列名现在是中文（先生要求）
     settings = get_settings()
     dicts = [dict(zip(header, r)) for r in data[:5]]
     for cell in dicts:
-        expect = convert.convert(int(cell["raw"]), settings)
-        assert float(cell["ma"]) == pytest.approx(expect["ma"], abs=1e-6)
-        assert float(cell["conc_raw"]) == pytest.approx(expect["conc_raw"], abs=1e-6)
-        assert float(cell["conc"]) == pytest.approx(expect["conc"], abs=1e-6)
-        assert cell["status"] == expect["status"]
+        expect = convert.convert(int(cell["原始值"]), settings)
+        assert float(cell["电流(mA)"]) == pytest.approx(expect["ma"], abs=1e-6)
+        assert float(cell["未补偿浓度"]) == pytest.approx(expect["conc_raw"], abs=1e-6)
+        assert float(cell["浓度"]) == pytest.approx(expect["conc"], abs=1e-6)
+        assert cell["状态"] == expect["status"]
 
 
 def test_时间正序(client: TestClient, with_token: str) -> None:

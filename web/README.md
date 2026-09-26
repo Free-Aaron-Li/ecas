@@ -63,7 +63,11 @@ bash web/scripts/sync-from-cloud.sh     # 云端 ecas 库 → 本机 ecas_dev（
 | GET | `/api/health` | 行数、最新时间、滞后秒数、是否断流 |
 | GET | `/api/readings?hours&limit&offset` | 区间读数（含换算），时间倒序；hours 夹 1..720、limit 夹 1..5000 |
 | GET | `/api/summary?hours` | 区间统计（均值/极值**只算有效区间** 4000~20500）+ 越限计数 |
-| GET | `/api/export.csv?hours&limit` | 导出区间原始值 CSV（含换算列 + 口径注释头）；limit 夹 1..20000 |
+| GET | `/api/export.csv?hours&limit` | 导出区间原始值 CSV（**中文表头** + 口径注释头）；limit 夹 1..20000 |
+| GET | `/api/alarms?hours&limit` | 报警事件（进行中 + 已结束），带最近一次扫描结果；hours 夹 1..720、limit 夹 1..2000 |
+| PUT | `/api/alarms/config?low&high` | 自定义报警上下限（**落库** `alarm_config`），0..100 且 low<high，否则 400 |
+| DELETE | `/api/alarms/config` | 恢复出厂默认上下限（`ECAS_ALARM_LOW/HIGH`） |
+| POST | `/api/alarms/scan` | 立刻扫一次（后端本来就每分钟自动扫） |
 | WS | `/ws/readings` | 有新行就推一条（5 秒轮询数据库） |
 
 口径只实现一次（后端），前端只展示：`浓度 = (raw − 4000)/160 + 0.3`，
@@ -75,8 +79,8 @@ bash web/scripts/sync-from-cloud.sh     # 云端 ecas 库 → 本机 ecas_dev（
   等工艺给定真实范围；`ECAS_ALARM_LOW=50 ECAS_ALARM_HIGH=52` 这样就能临时试越限效果）。
 - 后端把浓度阈值**反解成 raw 判据**（`convert.conc_to_raw`），与正向换算共用一处：
   `low_raw = 10352`、`high_raw = 13552`（= `4000 + (conc − 0.3) × 160`）。
-   `/api/params` 返回 `alarms{low,high,low_raw,high_raw}`，前端画 `ReferenceLine`
-  （上限红、下限琥珀，`ifOverflow="extendDomain"` 以免线落在数据域外被 recharts 丢掉）。
+   `/api/params` 返回 `alarms{low,high,low_raw,high_raw,custom,default_low,default_high}`，
+  前端画 `ReferenceLine`（**下限红、上限黄**，`ifOverflow="extendDomain"` 以免线落在数据域外被 recharts 丢掉）。
 - 越限计数 `n_below_alarm` / `n_above_alarm` **只在有效区间内统计**，且
   断线/超量程行的浓度是数学外推值，**不参与越限判断**（按 `status` 列判断设备异常）。
 - 导出给的是「能直接存档 / 给工艺看」的文件：UTF-8 **带 BOM**（Excel 不乱码）、
@@ -88,6 +92,33 @@ curl -s "http://127.0.0.1:8080/api/export.csv?hours=720" | head -14
 curl -sOJ "http://127.0.0.1:8080/api/export.csv?hours=168"   # 带令牌时记得加 ?token=
 ```
 
+
+## 四之三、报警事件（第 3 步）
+
+报警**不是一个前端动画**，是后端的一条规则引擎：数据在哪儿（现在在云服务器、
+将来在本地服务器），规则就得跟到哪儿，所以判定跑在服务端；看板只负责显示与改阈值。
+
+- **上下限可自定义**：`PUT /api/alarms/config?low=45&high=55` 写进库表 `alarm_config`，
+  不再是"改环境变量重启"。优先级 = **库里的覆盖 > `ECAS_ALARM_LOW/HIGH`（出厂默认）**；
+  `DELETE` 恢复默认。落库的理由：看板画的线、`/api/summary` 数的越限行数、引擎记的事件、
+  导出的注释头必须用**同一个数**，放浏览器 localStorage 会出现"页面写 45、事件按 40 记"。
+- **五类事件**（`alarm_event` 表）：`break` 断线 ｜ `over` 超量程 ｜ `conc_high` 浓度高于上限 ｜
+  `conc_low` 浓度低于下限 ｜ `no_data` 长时间无数据（超过 `ECAS_STALE_SECONDS`）。
+- **判定用 raw 阈值**（`low_raw` / `high_raw`），不用浓度浮点比较 —— 与统计、图表逐位一致，
+  边界行不会一处算进去一处没算。
+- **幂等**：靠部分唯一索引 `alarm_event_open_uidx (model, kind) WHERE ended_ts IS NULL`
+  保证"同一型号、同一类报警同时只有一条进行中"，同一批数据扫一百遍结果一样。
+- **两个刻意的判断**（都能在 `app/alarms.py` 的注释里看到理由）：
+  数据断流时**只维护 `no_data`，其它进行中的事件原地冻结**（数据停在两小时前，
+  既不能判"已恢复"也不能判"仍故障"）；浓度只在**有效区间** 4000~20500 判定
+  （断线行的浓度是数学外推值，可能是负数）。
+- 配置：`ECAS_ALARM_SCAN=1`（默认开）、`ECAS_ALARM_SCAN_SECONDS=60`。
+
+```bash
+curl -s -X PUT "http://127.0.0.1:8080/api/alarms/config?low=45&high=55"   # 改成 45~55
+curl -s "http://127.0.0.1:8080/api/alarms?hours=24"                       # 看事件
+curl -s -X DELETE "http://127.0.0.1:8080/api/alarms/config"               # 恢复默认
+```
 
 ## 五、访问令牌（对外发布用）
 
@@ -119,7 +150,7 @@ curl --cookie "ecas_token=$T" http://127.0.0.1:8080/api/health        # ③ Cook
 ## 六、测试
 
 ```bash
-cd web/backend && uv run pytest -q        # 43 passed（含真实库冒烟，库不在则自动跳过）
+cd web/backend && uv run pytest -q        # 61 passed（含真实库冒烟，库不在则自动跳过）
 cd web/frontend && pnpm build             # tsc -b 类型检查 + 构建
 ```
 

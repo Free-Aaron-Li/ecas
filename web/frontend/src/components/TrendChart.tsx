@@ -131,11 +131,11 @@ export function TrendChart({
               <ReferenceLine
                 y={alarms.high}
                 ifOverflow="extendDomain"
-                stroke="#ef4444"
+                stroke="#f59e0b"
                 strokeDasharray="5 3"
                 label={{
                   value: `上限 ${fmtNum(alarms.high, 1)}`,
-                  fill: '#ef4444',
+                  fill: '#f59e0b',
                   fontSize: 11,
                   position: 'insideTopRight',
                 }}
@@ -143,11 +143,11 @@ export function TrendChart({
               <ReferenceLine
                 y={alarms.low}
                 ifOverflow="extendDomain"
-                stroke="#f59e0b"
+                stroke="#ef4444"
                 strokeDasharray="5 3"
                 label={{
                   value: `下限 ${fmtNum(alarms.low, 1)}`,
-                  fill: '#f59e0b',
+                  fill: '#ef4444',
                   fontSize: 11,
                   position: 'insideBottomRight',
                 }}

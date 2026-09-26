@@ -91,7 +91,27 @@ def convert_row(row: dict[str, Any], s: Any) -> dict[str, Any]:
     return out
 
 
-def params(s: Any) -> dict[str, Any]:
+def resolve_alarms(s: Any, alarm_low: float | None = None, alarm_high: float | None = None) -> dict[str, Any]:
+    """把「报警上下限」定下来，并翻译成 raw 判据 —— **唯一一处**。
+
+    优先级：请求里带的（看板上的自定义值）> 服务端配置（`ECAS_ALARM_LOW/HIGH`）。
+    前端不自己换算浓度→raw，它只把自己填的上下限传回来，由这里翻译，
+    这样「画线用的数」和「SQL 统计用的数」永远是同一个。
+    """
+    low = s.alarm_low if alarm_low is None else float(alarm_low)
+    high = s.alarm_high if alarm_high is None else float(alarm_high)
+    return {
+        "low": low,
+        "high": high,
+        "low_raw": round(conc_to_raw(low, s)),
+        "high_raw": round(conc_to_raw(high, s)),
+        "custom": low != s.alarm_low or high != s.alarm_high,
+        "default_low": s.alarm_low,
+        "default_high": s.alarm_high,
+    }
+
+
+def params(s: Any, alarm_low: float | None = None, alarm_high: float | None = None) -> dict[str, Any]:
     """把当前口径完整暴露给前端（前端不自己算，避免两处口径）。"""
     if getattr(s, "offset_mode", "add") == "mul":
         formula_conc = "conc_raw * (1 + offset_pct/100)"
@@ -104,13 +124,8 @@ def params(s: Any) -> dict[str, Any]:
         "offset_conc": s.offset_conc,
         "offset_pct": s.offset_pct,
         "thresholds": {"break_low": s.break_low, "over_high": s.over_high},
-        "alarms": {
-            "low": s.alarm_low,
-            "high": s.alarm_high,
-            #: 上下限翻译成 raw（SQL 判据 / 图表阈值线的唯一来源）
-            "low_raw": round(conc_to_raw(s.alarm_low, s)),
-            "high_raw": round(conc_to_raw(s.alarm_high, s)),
-        },
+        #: 上下限翻译成 raw（SQL 判据 / 图表阈值线的唯一来源）
+        "alarms": resolve_alarms(s, alarm_low, alarm_high),
         "stale_seconds": s.stale_seconds,
         "export_limit": s.export_rows_max,
         "formula": {

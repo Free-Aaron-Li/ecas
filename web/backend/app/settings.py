@@ -34,11 +34,16 @@ class Settings(BaseSettings):
     stale_seconds: int = 600
 
     # —— 报警上下限（浓度，单位与浓度同）——
-    #: ⚠️ 40 / 60 是**占位值**，等工艺给出真实的上下限再改（代码不用动，
-    #: 用 `ECAS_ALARM_LOW` / `ECAS_ALARM_HIGH` 注入即可）；
-    #: 判据由 `convert.conc_to_raw()` 反解成 raw，SQL 与图表共用同一处换算。
+    #: ⚠️ 40 / 60 只是**出厂默认值**，真实的上下限可以在看板上直接改
+    #: （落库 `alarm_config`，重启/换浏览器都还在；「恢复默认」就回到这里）。
+    #: 判据由 `convert.conc_to_raw()` 反解成 raw，SQL、图表、报警引擎共用同一处换算。
     alarm_low: float = 40.0
     alarm_high: float = 60.0
+
+    #: 报警引擎（`app/alarms.py`）：是否开启后台周期扫描、扫描周期（秒）
+    #: 关掉后仍可用 `POST /api/alarms/scan` 手动扫，事件表也照常可读。
+    alarm_scan: bool = True
+    alarm_scan_seconds: int = 60
 
     #: 导出 CSV 的最大行数（越界夹住；比 /api/readings 的 5000 更宽松，
     #: 因为导出是"要整段数据"的用途）

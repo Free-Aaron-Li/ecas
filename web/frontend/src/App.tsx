@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   AuthError,
   exportCsvUrl,
+  fetchAlarms,
   fetchAuthInfo,
   fetchHealth,
   fetchParams,
@@ -12,7 +13,8 @@ import {
   getToken,
   setToken as saveToken,
 } from './api'
-import type { Health, Params, Reading, ReadingsPage, Summary } from './api'
+import type { AlarmsPage, Health, Params, Reading, ReadingsPage, Summary } from './api'
+import { AlarmPanel } from './components/AlarmPanel'
 import { KpiCards } from './components/KpiCards'
 import { RecentTable } from './components/RecentTable'
 import { InfoPill } from './components/StatusPill'
@@ -37,6 +39,7 @@ export default function App() {
   const [page, setPage] = useState<ReadingsPage | null>(null)
   const [summary, setSummary] = useState<Summary | null>(null)
   const [health, setHealth] = useState<Health | null>(null)
+  const [alarmsPage, setAlarmsPage] = useState<AlarmsPage | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [token, setToken] = useState(getToken())
@@ -49,10 +52,16 @@ export default function App() {
   // 容器职责：取数与状态，展示交给子组件（presentational）
   const load = useCallback(async (h: number) => {
     try {
-      const [readings, sum, hh] = await Promise.all([fetchReadings(h), fetchSummary(h), fetchHealth()])
+      const [readings, sum, hh, alarms] = await Promise.all([
+        fetchReadings(h),
+        fetchSummary(h),
+        fetchHealth(),
+        fetchAlarms(h),
+      ])
       setPage(readings)
       setSummary(sum)
       setHealth(hh)
+      setAlarmsPage(alarms)
       setError(null)
     } catch (err) {
       if (err instanceof AuthError) {
@@ -105,6 +114,14 @@ export default function App() {
   const chartItems = useMemo(() => [...rows].reverse(), [rows])
   const stale = health?.stale ?? false
 
+  // 报警面板改了阈值 → 阈值线、越限统计、事件表都得跟着重拉
+  const refreshAfterAlarmChange = useCallback(() => {
+    void fetchParams()
+      .then(setParams)
+      .catch(() => undefined)
+    void load(hours)
+  }, [hours, load])
+
   const enterToken = (value: string) => {
     saveToken(value)
     setToken(value)
@@ -135,6 +152,9 @@ export default function App() {
         </div>
       </div>
       <div className="header-right">
+        {alarmsPage && alarmsPage.active > 0 && (
+          <InfoPill tone="warn" text={`进行中报警 ${alarmsPage.active}`} />
+        )}
         <InfoPill tone={connected ? 'ok' : 'dim'} text={connected ? '实时推送已连接' : '实时推送未连接'} />
         {authRequired && token && (
           <button type="button" className="header-btn" onClick={forgetToken}>
@@ -223,6 +243,8 @@ export default function App() {
         />
       </section>
 
+      <AlarmPanel alarms={params?.alarms} page={alarmsPage} hours={hours} onChanged={refreshAfterAlarmChange} />
+
       <section className="card">
         <div className="chart-head">
           <h2 className="card-title" style={{ margin: 0 }}>
@@ -243,7 +265,8 @@ export default function App() {
         </span>
         <span>
           报警 <code>浓度 &lt; {fmtNum(params?.alarms.low, 1)}</code> /{' '}
-          <code>浓度 &gt; {fmtNum(params?.alarms.high, 1)}</code>（占位值，等工艺给定） ｜ 断线判据{' '}
+          <code>浓度 &gt; {fmtNum(params?.alarms.high, 1)}</code>
+          {params?.alarms.custom ? '（看板自定义）' : '（出厂默认，可在看板改）'} ｜ 断线判据{' '}
           <code>raw &lt; {params?.thresholds.break_low ?? 3600}</code> ｜ 超量程{' '}
           <code>raw &gt; {params?.thresholds.over_high ?? 20500}</code> ｜ 断流阈值{' '}
           <code>{params?.stale_seconds ?? 600} 秒</code> ｜ 30 秒自动刷新 + WebSocket 实时推送

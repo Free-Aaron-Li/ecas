@@ -52,6 +52,38 @@ export interface Alarms {
   /** 上下限翻译成 raw 之后的判据（后端换算，前端不重算） */
   low_raw: number
   high_raw: number
+  /** 当前用的是不是看板上的自定义值（false = 出厂默认） */
+  custom: boolean
+  /** 出厂默认值，供"恢复默认"按钮显示 */
+  default_low: number | null
+  default_high: number | null
+}
+
+/** 一条报警事件（进行中时 ended_ts 为空、active=true）。 */
+export interface AlarmEvent {
+  id: number
+  kind: 'break' | 'over' | 'conc_high' | 'conc_low' | 'no_data'
+  kind_label: string
+  level: '严重' | '警告'
+  started_ts: string
+  ended_ts: string | null
+  duration_seconds: number
+  active: boolean
+  peak_raw: number | null
+  peak_conc: number | null
+  peak_ts: string | null
+  n_rows: number
+  note: string | null
+}
+
+export interface AlarmsPage {
+  hours: number
+  count: number
+  /** 其中还在进行中的条数 */
+  active: number
+  items: AlarmEvent[]
+  /** 后端最近一次扫描的结果（没扫过就是 null） */
+  scan: Record<string, unknown> | null
 }
 
 export interface Params {
@@ -138,6 +170,48 @@ export const fetchHealth = () => getJSON<Health>('/api/health')
 export const fetchSummary = (hours: number) => getJSON<Summary>(`/api/summary?hours=${hours}`)
 export const fetchReadings = (hours: number, limit = 3000) =>
   getJSON<ReadingsPage>(`/api/readings?hours=${hours}&limit=${limit}`)
+
+// —— 报警事件与阈值（第 3 步）——
+
+export const fetchAlarms = (hours: number, limit = 50) =>
+  getJSON<AlarmsPage>(`/api/alarms?hours=${hours}&limit=${limit}`)
+
+/** 自定义报警上下限：落库（后端 alarm_config），事件判定与图表阈值线一起生效。 */
+export async function saveAlarms(low: number, high: number): Promise<Alarms> {
+  const token = getToken()
+  const headers: Record<string, string> = { accept: 'application/json' }
+  if (token && asciiOnly(token)) headers.authorization = `Bearer ${token}`
+  const query = `low=${encodeURIComponent(String(low))}&high=${encodeURIComponent(String(high))}`
+  const resp = await fetch(withToken(`/api/alarms/config?${query}`, token), { method: 'PUT', headers })
+  if (resp.status === 401) throw new AuthError()
+  if (resp.status === 400) throw new Error(((await resp.json()) as { detail?: string }).detail ?? '上下限不合法')
+  if (!resp.ok) throw new Error(`保存失败：HTTP ${resp.status}`)
+  return (await resp.json()) as Alarms
+}
+
+/** 恢复出厂默认上下限。 */
+export async function resetAlarms(): Promise<Alarms> {
+  const token = getToken()
+  const headers: Record<string, string> = { accept: 'application/json' }
+  if (token && asciiOnly(token)) headers.authorization = `Bearer ${token}`
+  const resp = await fetch(withToken('/api/alarms/config', token), { method: 'DELETE', headers })
+  if (resp.status === 401) throw new AuthError()
+  if (!resp.ok) throw new Error(`恢复默认失败：HTTP ${resp.status}`)
+  return (await resp.json()) as Alarms
+}
+
+/** 立刻扫一次（后端后台每分钟也会扫）。 */
+export const scanAlarms = () => postJSON<Record<string, unknown>>('/api/alarms/scan')
+
+async function postJSON<T>(path: string): Promise<T> {
+  const token = getToken()
+  const headers: Record<string, string> = { accept: 'application/json' }
+  if (token && asciiOnly(token)) headers.authorization = `Bearer ${token}`
+  const resp = await fetch(withToken(path, token), { method: 'POST', headers })
+  if (resp.status === 401) throw new AuthError()
+  if (!resp.ok) throw new Error(`${path} → HTTP ${resp.status}`)
+  return (await resp.json()) as T
+}
 
 /**
  * 导出 CSV 的下载地址。走浏览器原生下载（`<a download>`），所以**只能**用查询串带令牌

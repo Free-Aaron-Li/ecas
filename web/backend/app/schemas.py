@@ -61,12 +61,45 @@ class Health(BaseModel):
 
 
 class Alarms(BaseModel):
-    """浓度报警上下限 + 它们翻译成 raw 之后的判据（图表阈值线的唯一来源）。"""
+    """浓度报警上下限 + 它们翻译成 raw 之后的判据（图表阈值线的唯一来源）。
+
+    上下限可以在看板上自定义：`custom=true` 表示当前用的是自定义值，
+    `default_low/default_high` 是服务端配置（环境变量）里的默认值，供"恢复默认"用。
+    """
 
     low: float
     high: float
     low_raw: int
     high_raw: int
+    custom: bool = False
+    default_low: float | None = None
+    default_high: float | None = None
+
+
+class AlarmEvent(BaseModel):
+    """一条报警事件（进行中时 `ended_ts` 为空、`active=true`）。"""
+
+    id: int
+    kind: str = Field(description="break / over / conc_high / conc_low / no_data")
+    kind_label: str
+    level: str = Field(description="严重 / 警告")
+    started_ts: datetime
+    ended_ts: datetime | None = None
+    duration_seconds: float
+    active: bool
+    peak_raw: int | None = None
+    peak_conc: float | None = None
+    peak_ts: datetime | None = None
+    n_rows: int = 0
+    note: str | None = None
+
+
+class AlarmsPage(BaseModel):
+    hours: int
+    count: int
+    active: int = Field(description="其中还在进行中的条数")
+    items: list[AlarmEvent]
+    scan: dict[str, Any] | None = Field(default=None, description="最近一次扫描的结果（可选）")
 
 
 class Params(BaseModel):

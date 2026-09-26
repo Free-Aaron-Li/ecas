@@ -317,7 +317,7 @@ body {
   font-size: 12px;
 }
 
-/* 越限标记：下限用琥珀、上限用红（与图表阈值线同色，看一眼就能对上） */
+/* 越限标记：**下限红、上限黄**（与图表阈值线同色，看一眼就能对上） */
 .alarm-low,
 .alarm-high {
   font-size: 11px;
@@ -325,11 +325,11 @@ body {
 }
 
 .alarm-low {
-  color: var(--warn);
+  color: var(--bad);
 }
 
 .alarm-high {
-  color: var(--bad);
+  color: var(--warn);
 }
 
 .alarm-tag {
@@ -342,19 +342,20 @@ body {
 }
 
 .alarm-tag.low {
-  color: var(--warn);
-}
-
-.alarm-tag.high {
   color: var(--bad);
 }
 
-.strip .cell.hot .v {
+.alarm-tag.high {
   color: var(--warn);
 }
 
+.strip .cell.hot .v {
+  color: var(--bad);
+}
+
+/* 越限行：底色用中性琥珀，具体是"低于下限"还是"高于上限"看行内的箭头颜色 */
 tbody tr.row-alarm td {
-  background: rgba(245, 158, 11, 0.06);
+  background: rgba(148, 163, 184, 0.08);
 }
 
 .tooltip {
@@ -553,5 +554,88 @@ th.num {
 .gate-btn.ghost {
   background: transparent;
   border-color: var(--border-strong);
+  color: var(--fg-dim);
+}
+
+/* ── 报警面板（第 3 步）：自定义阈值 + 进行中报警 + 事件表 ───────────── */
+.alarm-form {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+  margin: var(--space-md) 0 var(--space-sm);
+}
+
+.alarm-form label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+
+.alarm-input {
+  width: 150px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--fg);
+  font: inherit;
+  font-family: var(--mono);
+  font-size: 14px;
+  padding: 6px 10px;
+}
+
+.alarm-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.alarm-actions {
+  display: flex;
+  gap: var(--space-sm);
+}
+
+.header-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.header-btn:disabled:hover {
+  color: var(--fg-dim);
+  border-color: var(--border-strong);
+}
+
+.alarm-note {
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-sm);
+}
+
+.alarm-note.ok {
+  color: #bbf7d0;
+  background: rgba(34, 197, 94, 0.1);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+}
+
+.alarm-note.bad {
+  color: #fecaca;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+}
+
+.alarm-active {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+  padding: var(--space-sm) 0 var(--space-md);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: var(--space-sm);
+}
+
+.alarm-active .label {
+  font-size: 12px;
   color: var(--fg-dim);
 }
