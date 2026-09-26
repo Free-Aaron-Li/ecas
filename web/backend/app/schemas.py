@@ -70,6 +70,13 @@ class Params(BaseModel):
     formula: dict[str, str]
 
 
+class AuthInfo(BaseModel):
+    """值守门状态：前端据此决定要不要弹令牌输入（这个接口本身不需要令牌）。"""
+
+    service: str = "ecas-backend"
+    auth_required: bool
+
+
 def to_reading(row: dict[str, Any], s: Any) -> Reading:
     """库行（ts/model/raw）+ 换算 → Reading。"""
     return Reading(ts=row["ts"], model=row["model"], **convert(int(row["raw"]), s))

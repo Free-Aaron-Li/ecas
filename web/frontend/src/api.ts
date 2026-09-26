@@ -54,11 +54,71 @@ export interface Params {
   formula: Record<string, string>
 }
 
+export interface AuthInfo {
+  service: string
+  auth_required: boolean
+}
+
+// —— 访问令牌 ——
+// 存在 localStorage（键名与后端 Cookie 同名）；**只**通过 `Authorization` 头或
+// `?token=` 传给后端，前端不做任何校验判断。
+
+const TOKEN_KEY = 'ecas_token'
+
+/** 后端要求令牌但没给对时抛这个，界面据此弹输入框。 */
+export class AuthError extends Error {
+  constructor(message = '需要访问令牌') {
+    super(message)
+    this.name = 'AuthError'
+  }
+}
+
+export function getToken(): string {
+  try {
+    return localStorage.getItem(TOKEN_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+export function setToken(value: string): void {
+  const v = value.trim()
+  try {
+    if (v) localStorage.setItem(TOKEN_KEY, v)
+    else localStorage.removeItem(TOKEN_KEY)
+  } catch {
+    /* 隐私模式下写不进去就算了，本次会话内仍可用 */
+  }
+}
+
+/** HTTP 头与 Cookie 按协议只能是 ASCII；非 ASCII 令牌只能走 `?token=`。 */
+function asciiOnly(s: string): boolean {
+  return /^[\x20-\x7e]*$/.test(s)
+}
+
+function withToken(path: string, token: string): string {
+  if (!token || asciiOnly(token)) return path
+  return `${path}${path.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`
+}
+
+/** 给 WebSocket 用：浏览器不能给 WS 带请求头，只能把令牌放查询串。 */
+export function wsUrl(path: string, token: string): string {
+  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
+  const query = token ? `?token=${encodeURIComponent(token)}` : ''
+  return `${proto}://${window.location.host}${path}${query}`
+}
+
 async function getJSON<T>(path: string): Promise<T> {
-  const resp = await fetch(path, { headers: { accept: 'application/json' } })
+  const token = getToken()
+  const headers: Record<string, string> = { accept: 'application/json' }
+  if (token && asciiOnly(token)) headers.authorization = `Bearer ${token}`
+  const resp = await fetch(withToken(path, token), { headers })
+  if (resp.status === 401) throw new AuthError()
   if (!resp.ok) throw new Error(`${path} → HTTP ${resp.status}`)
   return (await resp.json()) as T
 }
+
+export const fetchAuthInfo = () => getJSON<AuthInfo>('/api/auth')
 
 export const fetchParams = () => getJSON<Params>('/api/params')
 export const fetchHealth = () => getJSON<Health>('/api/health')

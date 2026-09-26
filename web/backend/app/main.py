@@ -1,12 +1,17 @@
 """ECAS 本地开发后端（FastAPI）。
 
 接口一览：
-    GET  /healthz                        存活探针（纯文本 ok）
+    GET  /healthz                        存活探针（纯文本 ok，**不需要令牌**）
+    GET  /api/auth                       是否启用了令牌校验（**不需要令牌**）
     GET  /api/params                     当前换算口径（量程/补偿/阈值/公式）
     GET  /api/health                     行数、最新时间、滞后秒数、是否断流
     GET  /api/readings?hours&limit&offset  区间读数（含换算结果），按时间倒序
     GET  /api/summary?hours              区间统计（均值/极值只算有效区间）
     WS   /ws/readings                    有新的行就推一条（默认 5 秒轮询数据库）
+
+鉴权（见 `app/auth.py`）：设了 `ECAS_AUTH_TOKEN` 就对 `/api/*` 与 `/ws/readings` 生效，
+令牌可放 `Authorization: Bearer <t>`、`?token=<t>` 或 Cookie `ecas_token`；
+**没设令牌 = 开发模式（放行）**，启动日志会写明，避免"以为开了其实没开"。
 
 设计约束（与项目分层约定一致）：
 * 换算口径只有一处实现（`app/convert.py`），接口只输出结果，前端不重算；
@@ -25,13 +30,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from psycopg_pool import ConnectionPool
 
-from . import convert, db, schemas
+from . import auth, convert, db, schemas
 from .settings import Settings, get_settings
 
 log = logging.getLogger("ecas.backend")
@@ -74,6 +79,12 @@ async def lifespan(app: FastAPI):
     app.state.pool = pool
     app.state.settings = settings
     log.info("ECAS 后端启动：http://%s:%s（DSN 不含口令）", settings.host, settings.port)
+    if settings.auth_required:
+        log.info("访问令牌校验：已启用（%d 位，来源 ECAS_AUTH_TOKEN）", len(settings.auth_token))
+    else:
+        log.warning(
+            "访问令牌校验：**未启用**（ECAS_AUTH_TOKEN 为空）——仅适合只监听 127.0.0.1 的开发模式，发布前必须设置"
+        )
     try:
         yield
     finally:
@@ -95,12 +106,18 @@ def healthz() -> str:
     return "ok"
 
 
-@app.get("/api/params", response_model=schemas.Params)
+@app.get("/api/auth", response_model=schemas.AuthInfo)
+def api_auth(request: Request) -> schemas.AuthInfo:
+    """值守门状态（本身不需要令牌）：前端据此决定要不要弹输入框。"""
+    return schemas.AuthInfo(auth_required=bool(request.app.state.settings.auth_required))
+
+
+@app.get("/api/params", response_model=schemas.Params, dependencies=[Depends(auth.require_auth)])
 def api_params(request: Request) -> schemas.Params:
     return schemas.Params(**convert.params(request.app.state.settings))
 
 
-@app.get("/api/health", response_model=schemas.Health)
+@app.get("/api/health", response_model=schemas.Health, dependencies=[Depends(auth.require_auth)])
 def api_health(request: Request) -> schemas.Health:
     settings: Settings = request.app.state.settings
     pool: ConnectionPool = request.app.state.pool
@@ -117,7 +134,7 @@ def api_health(request: Request) -> schemas.Health:
     )
 
 
-@app.get("/api/readings", response_model=schemas.ReadingsPage)
+@app.get("/api/readings", response_model=schemas.ReadingsPage, dependencies=[Depends(auth.require_auth)])
 def api_readings(
     request: Request,
     hours: int = Query(24, description="回看小时数，夹在 1..720"),
@@ -137,7 +154,7 @@ def api_readings(
     )
 
 
-@app.get("/api/summary", response_model=schemas.Summary)
+@app.get("/api/summary", response_model=schemas.Summary, dependencies=[Depends(auth.require_auth)])
 def api_summary(request: Request, hours: int = Query(24, description="回看小时数，夹在 1..720")) -> schemas.Summary:
     settings: Settings = request.app.state.settings
     pool: ConnectionPool = request.app.state.pool
@@ -164,7 +181,10 @@ def api_summary(request: Request, hours: int = Query(24, description="回看小�
 
 @app.websocket("/ws/readings")
 async def ws_readings(websocket: WebSocket) -> None:
-    """有新行就推；用最新一行的 ts 去重，不重复推同一条。"""
+    """有新行就推；用最新一行的 ts 去重，不重复推同一条。握手前先验令牌。"""
+    if not auth.ws_authorized(websocket):
+        await websocket.close(code=1008)  # policy violation：浏览器侧表现为握手被拒
+        return
     settings: Settings = websocket.app.state.settings
     pool: ConnectionPool = websocket.app.state.pool
     await websocket.accept()

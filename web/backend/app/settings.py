@@ -44,6 +44,18 @@ class Settings(BaseSettings):
         "http://localhost:5173",
     ]
 
+    # —— 访问令牌（对外发布用）——
+    #: 空 = 开发模式（不校验，仅适合只监听 127.0.0.1）；发布前必须设置。
+    #: 用 `ECAS_AUTH_TOKEN=...` 注入，**不要**写进仓库里的任何文件。
+    auth_token: str = ""
+
+    #: 浏览器侧把令牌同时写进 Cookie（同名），便于刷新后直接带上下文
+    auth_cookie: bool = True
+
+    @property
+    def auth_required(self) -> bool:
+        return bool(self.auth_token)
+
 
 @lru_cache
 def get_settings() -> Settings:

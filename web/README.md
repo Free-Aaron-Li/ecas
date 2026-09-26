@@ -57,7 +57,8 @@ bash web/scripts/sync-from-cloud.sh     # 云端 ecas 库 → 本机 ecas_dev（
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/healthz` | 存活探针（`ok`） |
+| GET | `/healthz` | 存活探针（`ok`）——**不需要令牌** |
+| GET | `/api/auth` | 值守门状态（`auth_required`）——**不需要令牌** |
 | GET | `/api/params` | 现役口径：量程 / 补偿 / 阈值 / 公式 |
 | GET | `/api/health` | 行数、最新时间、滞后秒数、是否断流 |
 | GET | `/api/readings?hours&limit&offset` | 区间读数（含换算），时间倒序；hours 夹 1..720、limit 夹 1..5000 |
@@ -66,6 +67,33 @@ bash web/scripts/sync-from-cloud.sh     # 云端 ecas 库 → 本机 ecas_dev（
 
 口径只实现一次（后端），前端只展示：`浓度 = (raw − 4000)/160 + 0.3`，
 断线判据 `raw < 3600`、超量程 `raw > 20500`。
+
+## 五、访问令牌（对外发布用）
+
+后端**只读环境变量** `ECAS_AUTH_TOKEN`（见 `web/backend/.env.example`）：
+
+```bash
+# 开发模式（默认）：没设令牌 → 不校验，启动日志会明确写「未启用」
+.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8080
+
+# 启用令牌：/api/* 与 /ws/readings 都要令牌
+ECAS_AUTH_TOKEN='一串够长的随机串' .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8080
+```
+
+客户端三种带法都认（WebSocket 用第 2 种，因为浏览器不能给 WS 带请求头）：
+
+```bash
+curl -H "Authorization: Bearer $T" http://127.0.0.1:8080/api/health   # ① 请求头
+curl "http://127.0.0.1:8080/api/health?token=$T"                      # ② 查询串
+curl --cookie "ecas_token=$T" http://127.0.0.1:8080/api/health        # ③ Cookie
+```
+
+浏览器打开看板时，前端先问 `/api/auth`：要令牌而且本机没有 → 弹「需要访问令牌」；
+令牌存 `localStorage`（键 `ecas_token`），**不回传任何地方**；顶栏可「清除令牌」。
+
+> ⚠️ 两条硬约束：`Authorization` 头与 Cookie 值**只能是 ASCII**（协议如此），
+> 非 ASCII 令牌只能走 `?token=`（URL 会 percent-encode）；
+> 令牌比较按 **UTF-8 字节**做常量时间比较，中文令牌也不会 500。
 
 ## 五、测试
 

@@ -1,10 +1,21 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { fetchHealth, fetchParams, fetchReadings, fetchSummary, fmtAge } from './api'
+import {
+  AuthError,
+  fetchAuthInfo,
+  fetchHealth,
+  fetchParams,
+  fetchReadings,
+  fetchSummary,
+  fmtAge,
+  getToken,
+  setToken as saveToken,
+} from './api'
 import type { Health, Params, Reading, ReadingsPage, Summary } from './api'
 import { KpiCards } from './components/KpiCards'
 import { RecentTable } from './components/RecentTable'
 import { InfoPill } from './components/StatusPill'
 import { SummaryStrip } from './components/SummaryStrip'
+import { TokenGate } from './components/TokenGate'
 import { TrendChart } from './components/TrendChart'
 import { useLiveReading } from './hooks/useLiveReading'
 
@@ -26,7 +37,11 @@ export default function App() {
   const [health, setHealth] = useState<Health | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const { live, connected } = useLiveReading()
+  const [token, setToken] = useState(getToken())
+  const [authRequired, setAuthRequired] = useState(false)
+  const [needToken, setNeedToken] = useState(false)
+  const [tokenError, setTokenError] = useState<string | null>(null)
+  const { live, connected } = useLiveReading(token)
 
   // 容器职责：取数与状态，展示交给子组件（presentational）
   const load = useCallback(async (h: number) => {
@@ -37,27 +52,45 @@ export default function App() {
       setHealth(hh)
       setError(null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      if (err instanceof AuthError) {
+        setNeedToken(true)
+        setTokenError(getToken() ? '令牌无效或已过期，请重新输入' : null)
+      } else {
+        setError(err instanceof Error ? err.message : String(err))
+      }
     } finally {
       setLoading(false)
     }
   }, [])
 
+  // 先问后端「要不要令牌」：要，而且本机没有 → 直接弹门（不必等 401）
   useEffect(() => {
-    fetchParams()
-      .then(setParams)
+    fetchAuthInfo()
+      .then((info) => {
+        setAuthRequired(info.auth_required)
+        if (info.auth_required && !getToken()) setNeedToken(true)
+      })
       .catch(() => undefined)
   }, [])
 
   useEffect(() => {
-    setLoading(true)
-    void load(hours)
-  }, [hours, load])
+    if (needToken) return
+    fetchParams()
+      .then(setParams)
+      .catch(() => undefined)
+  }, [needToken, token])
 
   useEffect(() => {
+    if (needToken) return
+    setLoading(true)
+    void load(hours)
+  }, [hours, load, needToken])
+
+  useEffect(() => {
+    if (needToken) return
     const timer = window.setInterval(() => void load(hours), POLL_MS)
     return () => window.clearInterval(timer)
-  }, [hours, load])
+  }, [hours, load, needToken])
 
   const rows = useMemo<Reading[]>(() => {
     const base = page?.items ?? []
@@ -69,24 +102,71 @@ export default function App() {
   const chartItems = useMemo(() => [...rows].reverse(), [rows])
   const stale = health?.stale ?? false
 
-  return (
-    <div className="app">
-      <header className="header">
-        <div>
-          <h1>ECAS · 浓度计实时监测</h1>
-          <div className="sub">
-            {params?.model ?? 'DPRO-66'} ｜ 塔石 DTU → MQTT → PostgreSQL ｜{' '}
-            {params ? `${params.range.i_lo}~${params.range.i_hi} mA ↔ ${params.range.c_lo}~${params.range.c_hi}` : '4~20 mA ↔ 0~100'}
-          </div>
+  const enterToken = (value: string) => {
+    saveToken(value)
+    setToken(value)
+    setTokenError(null)
+    setNeedToken(false)
+    setLoading(true)
+    void load(hours)
+  }
+
+  const forgetToken = () => {
+    saveToken('')
+    setToken('')
+    if (authRequired) {
+      setNeedToken(true)
+      setPage(null)
+      setSummary(null)
+      setHealth(null)
+    }
+  }
+
+  const header = (
+    <header className="header">
+      <div>
+        <h1>ECAS · 浓度计实时监测</h1>
+        <div className="sub">
+          {params?.model ?? 'DPRO-66'} ｜ 塔石 DTU → MQTT → PostgreSQL ｜{' '}
+          {params ? `${params.range.i_lo}~${params.range.i_hi} mA ↔ ${params.range.c_lo}~${params.range.c_hi}` : '4~20 mA ↔ 0~100'}
         </div>
-        <div className="header-right">
-          <InfoPill tone={connected ? 'ok' : 'dim'} text={connected ? '实时推送已连接' : '实时推送未连接'} />
+      </div>
+      <div className="header-right">
+        <InfoPill tone={connected ? 'ok' : 'dim'} text={connected ? '实时推送已连接' : '实时推送未连接'} />
+        {authRequired && token && (
+          <button type="button" className="header-btn" onClick={forgetToken}>
+            清除令牌
+          </button>
+        )}
+        {health ? (
           <InfoPill
             tone={stale ? 'warn' : 'ok'}
-            text={stale ? `无新数据 ${fmtAge(health?.age_seconds)}` : `数据新鲜（滞后 ${fmtAge(health?.age_seconds)}）`}
+            text={stale ? `无新数据 ${fmtAge(health.age_seconds)}` : `数据新鲜（滞后 ${fmtAge(health.age_seconds)}）`}
           />
-        </div>
-      </header>
+        ) : (
+          <InfoPill tone="dim" text="尚未取到数据" />
+        )}
+      </div>
+    </header>
+  )
+
+  if (needToken) {
+    return (
+      <div className="app">
+        {header}
+        <TokenGate onSubmit={enterToken} error={tokenError} />
+        <footer className="footer">
+          <span>
+            探针 <code>/healthz</code> 与值守门状态 <code>/api/auth</code> 无需令牌，其余接口都需要
+          </span>
+        </footer>
+      </div>
+    )
+  }
+
+  return (
+    <div className="app">
+      {header}
 
       {error && (
         <div className="card error">
