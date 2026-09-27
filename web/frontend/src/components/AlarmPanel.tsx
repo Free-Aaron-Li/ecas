@@ -137,44 +137,56 @@ export function AlarmPanel({
         </span>
       </div>
 
-      <table>
-        <thead>
-          <tr>
-            <th>开始时间</th>
-            <th>种类</th>
-            <th>级别</th>
-            <th>持续</th>
-            <th className="num">峰值 raw</th>
-            <th className="num">峰值浓度</th>
-            <th className="num">行数</th>
-            <th>状态</th>
-          </tr>
-        </thead>
-        <tbody>
-          {(page?.items ?? []).map((e) => (
-            <tr key={e.id} className={e.active ? 'row-alarm' : undefined}>
-              <td>{fmtDateTime(e.started_ts)}</td>
-              <td>
-                {e.kind_label}
-                {e.note ? <span className="hint"> {e.note}</span> : null}
-              </td>
-              <td className={e.level === '严重' ? 'alarm-low' : 'alarm-high'}>{e.level}</td>
-              <td>{fmtDuration(e.duration_seconds)}</td>
-              <td className="num">{e.peak_raw ?? '—'}</td>
-              <td className="num">{fmtNum(e.peak_conc, 2)}</td>
-              <td className="num">{e.n_rows}</td>
-              <td>{e.active ? '进行中' : `已结束 ${e.ended_ts ? fmtDateTime(e.ended_ts) : ''}`}</td>
-            </tr>
-          ))}
-          {!(page?.items ?? []).length && (
+      <div className="table-wrap">
+        <table className="alarm-table">
+          <thead>
             <tr>
-              <td colSpan={8} className="hint">
-                近 {hours} 小时没有报警记录
-              </td>
+              <th>开始时间</th>
+              <th>种类</th>
+              <th>级别</th>
+              <th>持续</th>
+              <th className="num">峰值 raw</th>
+              <th className="num">峰值浓度</th>
+              <th className="num">行数</th>
+              <th>状态</th>
             </tr>
-          )}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {(page?.items ?? []).map((e) => (
+              <tr key={e.id} className={e.active ? 'row-alarm' : undefined}>
+                <td data-label="开始时间">{fmtDateTime(e.started_ts)}</td>
+                <td data-label="种类">
+                  {e.kind_label}
+                  {e.note ? <span className="hint"> {e.note}</span> : null}
+                </td>
+                <td data-label="级别" className={e.level === '严重' ? 'alarm-low' : 'alarm-high'}>
+                  {e.level}
+                </td>
+                <td data-label="持续">{fmtDuration(e.duration_seconds)}</td>
+                <td data-label="峰值 raw" className="num">
+                  {e.peak_raw ?? '—'}
+                </td>
+                <td data-label="峰值浓度" className="num">
+                  {fmtNum(e.peak_conc, 2)}
+                </td>
+                <td data-label="行数" className="num">
+                  {e.n_rows}
+                </td>
+                <td data-label="状态">
+                  {e.active ? '进行中' : `已结束 ${e.ended_ts ? fmtDateTime(e.ended_ts) : ''}`}
+                </td>
+              </tr>
+            ))}
+            {!(page?.items ?? []).length && (
+              <tr className="empty">
+                <td colSpan={8} className="hint">
+                  近 {hours} 小时没有报警记录
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
     </section>
   )
 }

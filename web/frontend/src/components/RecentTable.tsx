@@ -8,7 +8,7 @@ export function RecentTable({ rows, alarms }: { rows: Reading[]; alarms?: Alarms
 
   return (
     <div className="table-wrap">
-      <table>
+      <table className="recent-table">
         <thead>
           <tr>
             <th>时间</th>
@@ -24,11 +24,17 @@ export function RecentTable({ rows, alarms }: { rows: Reading[]; alarms?: Alarms
             const side = r.status === '正常' ? alarmSide(r.conc, alarms) : null
             return (
               <tr key={`${r.ts}-${r.raw}`} className={side ? 'row-alarm' : undefined}>
-                <td>{fmtDateTime(r.ts)}</td>
-                <td className="num">{r.raw}</td>
-                <td className="num">{fmtNum(r.ma, 3)}</td>
-                <td className="num">{fmtNum(r.conc_raw, 3)}</td>
-                <td className="num">
+                <td data-label="时间">{fmtDateTime(r.ts)}</td>
+                <td data-label="原始值" className="num">
+                  {r.raw}
+                </td>
+                <td data-label="电流 mA" className="num">
+                  {fmtNum(r.ma, 3)}
+                </td>
+                <td data-label="未补偿" className="num">
+                  {fmtNum(r.conc_raw, 3)}
+                </td>
+                <td data-label="浓度" className="num">
                   {fmtNum(r.conc, 3)}
                   {side && (
                     <span className={side === 'high' ? 'alarm-high' : 'alarm-low'}>
@@ -36,7 +42,7 @@ export function RecentTable({ rows, alarms }: { rows: Reading[]; alarms?: Alarms
                     </span>
                   )}
                 </td>
-                <td>
+                <td data-label="状态">
                   <StatusPill status={r.status} />
                 </td>
               </tr>
