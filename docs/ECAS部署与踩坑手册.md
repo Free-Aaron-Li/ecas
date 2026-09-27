@@ -945,6 +945,7 @@ web/scripts/sync-from-cloud.sh    # ssh + pg_dump → 本地 ecas_dev（--clean 
 | 只改了前端却重建整个栈 | 后端容器 `./frontend-dist:/srv/web/frontend/dist:ro` ＋ FastAPI `StaticFiles` 每次请求读盘 | 只需 `rsync -a --delete web/frontend/dist/ ubuntu-super:/opt/ecas/frontend-dist/`，**不必**重建镜像/重启容器 |
 | 提交里混进别的会话的未提交改动（HEAD 构建失败：`TS2322 … Property 'hours' does not exist`） | 多会话共用同一工作区 | 提交前先 `git show HEAD:<path>` 对照、只 `git add` 自己改的文件；用 `git worktree add --detach /tmp/ecas-clean HEAD` 做**干净构建**验证（脏树产物 hash/体积不同即为信号） |
 | 手机端「显示不对」无法复现 | 无真机 / 本机无浏览器 | Playwright ＋ Chrome for Testing（`executablePath` 指 `/tmp/chrome-1200/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`），`addInitScript` 注入 `localStorage.ecas_token`，量 `document.documentElement.scrollWidth - innerWidth` 与 `getBoundingClientRect().right > vw` 的元素清单 |
+| 线上「区间统计条」变成标签和值挤在一样的 9 行纯文本 | 重写 styles.css 为新版 strip（`.strip-head`/`.strip-sec`/`.tile`）时删掉了 `.strip .cell`/`.k`/`.v`，但当时**已提交**的 `SummaryStrip.tsx` 仍在用 `.cell` ⇒ 类名悬空、无网格无等宽数字 | 已用 `.strip:has(> .cell)` 限定「直接子元素是 .cell 时」补回旧网格（不影响新版 `.tile`）；**推广做法**：改 CSS 类名前先比对「源码 `className` ↔ CSS 已定义类」两份清单——本次脚本正好查出 `cell`/`v` 悬空（`alarm-table`/`recent-table` 只是钩子、无需定义）。另注意：CSS 与 JSX 若在不同提交里落地，部署出来的线上就是**两版错配**的样子 |
 
 ---
 
