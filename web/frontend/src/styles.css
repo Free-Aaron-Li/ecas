@@ -953,3 +953,39 @@ th.num {
     flex-wrap: wrap;
   }
 }
+
+/* ── 区间统计条：兼容仍在用 .cell 的 SummaryStrip ─────────────────────────
+   重写 styles.css 为新版 strip（.strip-head / .strip-sec / .tile）时，
+   .strip .cell / .k / .v 规则被删掉了，而当时提交的 SummaryStrip.tsx 仍然用
+   .cell 渲染 ⇒ 线上统计条变成「标签值连在一起」的 9 行纯文本（无网格、无等宽数字）。
+   这里只在 .strip 的**直接子元素是 .cell** 时套用旧网格；新版 JSX 用 .tile，
+   没有 .cell，完全不受影响。 */
+.strip:has(> .cell) {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: var(--space-sm) var(--space-md);
+}
+
+.strip > .cell {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.strip > .cell .k {
+  font-size: 11px;
+  color: var(--fg-faint);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.strip > .cell .v {
+  font-family: var(--mono);
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.strip > .cell.hot .v {
+  color: var(--bad);
+}
