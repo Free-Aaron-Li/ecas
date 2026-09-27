@@ -9,10 +9,15 @@
     GET  /api/summary?hours              区间统计（均值/极值只算有效区间；含越限行数）
     GET  /api/export.csv?hours&limit     导出原始值 + 换算结果（CSV，带 BOM 与中文口径注释头）
     GET  /api/alarms?hours&limit         报警事件台账（含进行中的）
+
     PUT  /api/alarms/config?low&high     自定义报警上下限（落库，事件/统计/画线一起生效）
     DELETE /api/alarms/config            恢复默认上下限
     POST /api/alarms/scan                立即扫描一次（不等后台周期）
     WS   /ws/readings                    有新的行就推一条（默认 5 秒轮询数据库）
+
+**时间窗**（`/api/readings`、`/api/summary`、`/api/export.csv`、`/api/alarms` 四者同源）：
+默认按「最近 `hours` 小时」滑动；也可以给 `start`/`end`（ISO 8601，可带偏移或 `Z`）看**指定时段**
+——两端都给就是绝对窗口，不会再随当前时间漂走；自定义区间最长 720 小时。
 
 鉴权（见 `app/auth.py`）：设了 `ECAS_AUTH_TOKEN` 就对 `/api/*` 与 `/ws/readings` 生效，
 令牌可放 `Authorization: Bearer <t>`、`?token=<t>` 或 Cookie `ecas_token`；
@@ -33,7 +38,7 @@ import asyncio
 import logging
 import re
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -44,17 +49,20 @@ from fastapi.responses import PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from psycopg_pool import ConnectionPool
 
-from . import alarms, auth, convert, db, schemas
+from . import accounts, alarms, auth, convert, db, schemas
 from .settings import Settings, get_settings
 
 log = logging.getLogger("ecas.backend")
+
+#: 时间窗上限：预设 30 天；自定义起止也夹在同一个上限（超过报 400 而不是悄悄改窗口）
+MAX_WINDOW_HOURS = 720
 
 SQL_HEALTH = "SELECT count(*)::int AS rows_total, max(ts) AS last_ts FROM raw_reading"
 SQL_LAST = "SELECT ts, model, raw FROM raw_reading ORDER BY ts DESC LIMIT 1"
 SQL_READINGS = """
 SELECT ts, model, raw
   FROM raw_reading
- WHERE ts >= now() - make_interval(hours => %(hours)s)
+ WHERE ts >= %(start)s AND ts < %(end)s
  ORDER BY ts DESC
  LIMIT %(limit)s OFFSET %(offset)s
 """
@@ -72,14 +80,14 @@ SELECT count(*)::int                                                   AS n,
        max(raw) FILTER (WHERE raw BETWEEN %(lo)s AND %(hi)s)            AS raw_max,
        avg(raw) FILTER (WHERE raw BETWEEN %(lo)s AND %(hi)s)            AS raw_avg
   FROM raw_reading
- WHERE ts >= now() - make_interval(hours => %(hours)s)
+ WHERE ts >= %(start)s AND ts < %(end)s
 """
 
 #: 导出用：与 /api/readings 同源，但**按时间正序**，且换行/列的组装只在后端做一次
 SQL_EXPORT = """
 SELECT ts, model, raw
   FROM raw_reading
- WHERE ts >= now() - make_interval(hours => %(hours)s)
+ WHERE ts >= %(start)s AND ts < %(end)s
  ORDER BY ts ASC
  LIMIT %(limit)s
 """
@@ -92,6 +100,56 @@ DIST_DIR = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
 def clamp(value: int, low: int, high: int) -> int:
     return max(low, min(high, value))
+
+
+def parse_ts(value: str) -> datetime:
+    """ISO 8601 → 带时区的 datetime；不带时区的按**服务器本地时间**解释。
+
+    前端 `datetime-local` 输入框给的是本地时间，浏览器侧会先转成带偏移的 ISO 再发过来，
+    所以只有手工调接口时才会走到"不带时区"这条兜底路径。
+
+    容错：查询串里没转义的 `+08:00` 会被解成空格（`+` → ` `），
+    `2026-09-27T08:00 08:00` 这种也照样认（`curl` 手敲常见）。
+    """
+    text = value.strip().replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        try:
+            dt = datetime.fromisoformat(text.replace(" ", "+"))
+        except ValueError as exc:
+            raise ValueError(f"{value!r} 不是 ISO 8601 时间") from exc
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+    return dt
+
+
+def resolve_window(hours: int, start: str | None = None, end: str | None = None) -> tuple[datetime, datetime, int]:
+    """把「最近 N 小时」或「自定义起止」统一成**左闭右开**的时间窗。
+
+    * 只给 `hours`（看板预设）⇒ 终点＝现在，窗口随时间滑动；
+    * 给了 `start`/`end`（看板自定义时段）⇒ 用绝对值 —— 「看昨天 8 点到 12 点」不能在刷新后漂走；
+    * 返回 `(start_ts, end_ts, hours)`，`hours` 供界面显示用（自定义时是实际跨度，取整）。
+    """
+    if start or end:
+        now = datetime.now().astimezone()
+        try:
+            end_ts = parse_ts(end) if end else now
+            start_ts = parse_ts(start) if start else end_ts - timedelta(hours=clamp(hours, 1, MAX_WINDOW_HOURS))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"时间参数无法解析（{exc}）") from exc
+        if start_ts >= end_ts:
+            raise HTTPException(status_code=400, detail="起点必须早于终点")
+        span = end_ts - start_ts
+        if span > timedelta(hours=MAX_WINDOW_HOURS):
+            raise HTTPException(
+                status_code=400,
+                detail=f"自定义区间最长 {MAX_WINDOW_HOURS} 小时（30 天），当前 {span.total_seconds() / 3600:.1f} 小时",
+            )
+        return start_ts, end_ts, max(1, round(span.total_seconds() / 3600))
+    hours = clamp(hours, 1, MAX_WINDOW_HOURS)
+    now = datetime.now().astimezone()
+    return now - timedelta(hours=hours), now, hours
 
 
 async def alarm_loop(app: FastAPI, stop: asyncio.Event) -> None:
@@ -130,6 +188,10 @@ async def lifespan(app: FastAPI):
         await asyncio.to_thread(alarms.ensure_schema, pool)
     except Exception as exc:
         log.warning("报警表建立失败（不影响看板读取）：%s", exc)
+    try:
+        await asyncio.to_thread(accounts.ensure_schema, pool)
+    except Exception as exc:
+        log.warning("账户表建立失败（网页登录将不可用）：%s", exc)
     stop = asyncio.Event()
     task: asyncio.Task | None = None
     if settings.alarm_scan:
@@ -154,6 +216,10 @@ app.add_middleware(
     allow_methods=["GET", "OPTIONS"],
     allow_headers=["*"],
 )
+
+#: 账户内部 API（`/internal/accounts*`，只有网关 Worker 凭 ECAS_AUTH_TOKEN 能调）。
+#: ⚠️ 必须在下面 `app.mount("/", StaticFiles...)` **之前**注册，否则会被静态站挂载吞掉。
+app.include_router(accounts.router)
 
 
 @app.get("/healthz", response_class=PlainTextResponse)
@@ -196,16 +262,23 @@ def api_health(request: Request) -> schemas.Health:
 @app.get("/api/readings", response_model=schemas.ReadingsPage, dependencies=[Depends(auth.require_auth)])
 def api_readings(
     request: Request,
-    hours: int = Query(24, description="回看小时数，夹在 1..720"),
+    hours: int = Query(24, description="回看小时数，夹在 1..720（给了 start/end 时只当兜底）"),
     limit: int = Query(200, description="条数上限，夹在 1..5000"),
     offset: int = Query(0, description="偏移，负数按 0"),
+    start: str | None = Query(None, description="自定义起点，ISO 8601；与 end 一起用时为绝对窗口"),
+    end: str | None = Query(None, description="自定义终点，ISO 8601；缺省=现在"),
 ) -> schemas.ReadingsPage:
     settings: Settings = request.app.state.settings
     pool: ConnectionPool = request.app.state.pool
-    hours, limit, offset = clamp(hours, 1, 720), clamp(limit, 1, 5000), max(0, offset)
-    rows = db.fetch_all(pool, SQL_READINGS, {"hours": hours, "limit": limit, "offset": offset})
+    limit, offset = clamp(limit, 1, 5000), max(0, offset)
+    start_ts, end_ts, hours = resolve_window(hours, start, end)
+    rows = db.fetch_all(
+        pool, SQL_READINGS, {"start": start_ts, "end": end_ts, "limit": limit, "offset": offset}
+    )
     return schemas.ReadingsPage(
         hours=hours,
+        start=start_ts,
+        end=end_ts,
         limit=limit,
         offset=offset,
         count=len(rows),
@@ -214,16 +287,22 @@ def api_readings(
 
 
 @app.get("/api/summary", response_model=schemas.Summary, dependencies=[Depends(auth.require_auth)])
-def api_summary(request: Request, hours: int = Query(24, description="回看小时数，夹在 1..720")) -> schemas.Summary:
+def api_summary(
+    request: Request,
+    hours: int = Query(24, description="回看小时数，夹在 1..720（给了 start/end 时只当兜底）"),
+    start: str | None = Query(None, description="自定义起点，ISO 8601"),
+    end: str | None = Query(None, description="自定义终点，ISO 8601；缺省=现在"),
+) -> schemas.Summary:
     settings: Settings = request.app.state.settings
     pool: ConnectionPool = request.app.state.pool
-    hours = clamp(hours, 1, 720)
+    start_ts, end_ts, hours = resolve_window(hours, start, end)
     alarms_now = alarms.effective_alarms(pool, settings)
     row = db.fetch_one(
         pool,
         SQL_SUMMARY,
         {
-            "hours": hours,
+            "start": start_ts,
+            "end": end_ts,
             "lo": int(settings.i_lo * 1000),
             "hi": settings.over_high,
             "alarm_lo": alarms_now["low_raw"],
@@ -232,6 +311,8 @@ def api_summary(request: Request, hours: int = Query(24, description="回看小�
     ) or {}
     return schemas.Summary(
         hours=hours,
+        start=start_ts,
+        end=end_ts,
         n=int(row.get("n") or 0),
         n_valid=int(row.get("n_valid") or 0),
         broken=int(row.get("broken") or 0),
@@ -250,8 +331,10 @@ def api_summary(request: Request, hours: int = Query(24, description="回看小�
 @app.get("/api/export.csv", dependencies=[Depends(auth.require_auth)])
 def api_export_csv(
     request: Request,
-    hours: int = Query(24, description="回看小时数，夹在 1..720"),
+    hours: int = Query(24, description="回看小时数，夹在 1..720（给了 start/end 时只当兜底）"),
     limit: int = Query(20000, description="行数上限，夹在 1..ECAS_EXPORT_ROWS_MAX"),
+    start: str | None = Query(None, description="自定义起点，ISO 8601"),
+    end: str | None = Query(None, description="自定义终点，ISO 8601；缺省=现在"),
 ) -> Response:
     """导出区间原始值 + 换算结果（CSV）。
 
@@ -262,8 +345,9 @@ def api_export_csv(
     """
     settings: Settings = request.app.state.settings
     pool: ConnectionPool = request.app.state.pool
-    hours, limit = clamp(hours, 1, 720), clamp(limit, 1, settings.export_rows_max)
-    rows = db.fetch_all(pool, SQL_EXPORT, {"hours": hours, "limit": limit})
+    start_ts, end_ts, hours = resolve_window(hours, start, end)
+    limit = clamp(limit, 1, settings.export_rows_max)
+    rows = db.fetch_all(pool, SQL_EXPORT, {"start": start_ts, "end": end_ts, "limit": limit})
     # 注释头与表头都用**生效的**阈值（和看板、报警引擎同一处来源）
     alarms_now = alarms.effective_alarms(pool, settings)
     params = convert.params(settings, alarms_now["low"], alarms_now["high"])
@@ -275,8 +359,8 @@ def api_export_csv(
     lines = [
         "# ECAS 浓度计原始值导出",
         f"# 型号: {settings.model_name}",
-        f"# 区间: 最近 {hours} 小时（数据实际覆盖 {stamp(rows[0]['ts']) if rows else '无数据'}"
-        f" ~ {stamp(rows[-1]['ts']) if rows else '无数据'}）",
+        f"# 区间: {stamp(start_ts)} ~ {stamp(end_ts)}（{hours} 小时；数据实际覆盖 "
+        f"{stamp(rows[0]['ts']) if rows else '无数据'} ~ {stamp(rows[-1]['ts']) if rows else '无数据'}）",
         f"# 生成时间: {now.isoformat(timespec='seconds')} ｜ 行数: {len(rows)}",
         f"# 口径: {params['formula']['ma']} ｜ conc_raw = {params['formula']['conc_raw']}"
         f" ｜ conc = {params['formula']['conc']}",
@@ -307,7 +391,13 @@ def api_export_csv(
         )
 
     slug = re.sub(r"[^A-Za-z0-9._-]", "_", settings.model_name) or "ecas"
-    filename = f"ecas_{slug}_{hours}h_{now.strftime('%Y%m%d-%H%M')}.csv"
+    # 预设区间用「最近 Nh」（一眼知道是滑动窗口）；自定义区间把起止写进文件名（免得下个月忘了导出的是哪一段）
+    span = (
+        f"{start_ts:%m%d-%H%M}~{end_ts:%m%d-%H%M}"
+        if (start or end)
+        else f"{hours}h"
+    )
+    filename = f"ecas_{slug}_{span}_{now.strftime('%Y%m%d-%H%M')}.csv"
     return Response(
         content="\ufeff" + "\r\n".join(lines) + "\r\n",
         media_type="text/csv; charset=utf-8",
@@ -321,16 +411,21 @@ def api_export_csv(
 @app.get("/api/alarms", response_model=schemas.AlarmsPage, dependencies=[Depends(auth.require_auth)])
 def api_alarms(
     request: Request,
-    hours: int = Query(24, description="回看小时数，夹在 1..720"),
+    hours: int = Query(24, description="回看小时数，夹在 1..720（给了 start/end 时只当兜底）"),
     limit: int = Query(200, description="条数上限，夹在 1..2000"),
+    start: str | None = Query(None, description="自定义起点，ISO 8601"),
+    end: str | None = Query(None, description="自定义终点，ISO 8601；缺省=现在"),
 ) -> schemas.AlarmsPage:
     """报警事件台账（含进行中的），按时间倒序。"""
     settings: Settings = request.app.state.settings
     pool: ConnectionPool = request.app.state.pool
-    hours, limit = clamp(hours, 1, 720), clamp(limit, 1, 2000)
-    items = alarms.events(pool, settings, hours=hours, limit=limit)
+    limit = clamp(limit, 1, 2000)
+    start_ts, end_ts, hours = resolve_window(hours, start, end)
+    items = alarms.events(pool, settings, start=start_ts, end=end_ts, limit=limit)
     return schemas.AlarmsPage(
         hours=hours,
+        start=start_ts,
+        end=end_ts,
         count=len(items),
         active=sum(1 for item in items if item["active"]),
         items=[schemas.AlarmEvent(**item) for item in items],
