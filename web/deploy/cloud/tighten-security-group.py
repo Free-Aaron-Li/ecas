@@ -18,6 +18,13 @@
     ./tighten-security-group.py apply --confirm          # 真改（先自动备份原规则到同目录 JSON）
     ./tighten-security-group.py apply                    # 不带 --confirm = 等于 plan，零写入
 
+删除冗余放行（2026-09-28 复核结论，见报告附录 B / 手册 §8.11）：
+    ./tighten-security-group.py drop --drop 12121 --drop 11012 --drop 21212/TCP --drop 11011/TCP
+    ./tighten-security-group.py trim --confirm            # trim = 上面那组冗余的固定清单，一条命令搞定
+    （drop/trim 只删「Action=ACCEPT 且端口/协议命中」的行；拒绝类规则一律保留不动，更不动别人的端口。）
+    （`12121` = EasyTier 控制面改走 SSH 隧道；`11012` 全无监听；`21212/TCP` 与 `11011/TCP` 无监听，
+      但 `21212/UDP`（设备取配置）与 `11011/UDP`（easytier-core 在用）必须保留。）
+
 参数（默认值即 ECAS 现状）：
     --instance ins-1bgcyzm3 --region ap-shanghai
     --port 8883 --allow 180.108.106.0/24 [--allow 127.0.0.1 ...]
@@ -43,6 +50,12 @@ DEFAULT_INSTANCE = "ins-1bgcyzm3"
 DEFAULT_REGION = "ap-shanghai"
 DEFAULT_PORT = "8883"
 DEFAULT_ALLOW = "180.108.106.0/24"
+# 2026-09-28 复核后确认的冗余放行（报告附录 B / 手册 §8.11）：
+#   12121        EasyTier 控制面 ⇒ 改走 ssh -L 隧道
+#   11012        TCP/UDP 全无监听
+#   21212/TCP    无监听（21212/UDP 是设备取配置口，必须留）
+#   11011/TCP    无监听（11011/UDP 被 easytier-core 占用，必须留）
+DEFAULT_DROPS = ["12121", "11012", "21212/TCP", "11011/TCP"]
 
 
 # --------------------------------------------------------------------------- #
@@ -197,6 +210,36 @@ def build_new_ingress(rules: list, port: str, allow: list) -> tuple:
     return new, changes
 
 
+def spec_hit(rule: dict, spec: str) -> bool:
+    """判断一条规则是否命中删除规格（形如 '12121' 或 '21212/TCP'）。
+    只命中 ACCEPT 行；带协议后缀时，Protocol=ALL 的行视为**不命中**（宁可不删，避免误删大范围规则）。"""
+    port, _, proto = spec.partition("/")
+    if rule.get("Action") != "ACCEPT":
+        return False
+    if not port_hit(rule.get("Port", ""), port):
+        return False
+    if not proto:
+        return True
+    rp = str(rule.get("Protocol", "")).upper()
+    if rp in ("ALL", "*"):
+        return False
+    return proto.upper() == rp
+
+
+def build_drops(rules: list, specs: list) -> tuple:
+    """返回 (新规则列表, 处置清单)。只删命中规格的放行行，其余（含全部拒绝行）原样保留。"""
+    new, changes = [], []
+    for r in rules:
+        hit = next((s for s in specs if spec_hit(r, s)), None)
+        if hit:
+            changes.append(("删除", hit, f"{r.get('Protocol')}/{r.get('Port')}",
+                            r.get("CidrBlock") or r.get("CidrBlockV6") or "-",
+                            r.get("Description") or ""))
+            continue
+        new.append(dict(r))
+    return new, changes
+
+
 def apply_ingress(sg: str, ingress: list, region: str, sid: str, skey: str) -> dict:
     return call("vpc", "ModifySecurityGroupPolicies",
                 {"SecurityGroupId": sg, "SecurityGroupPolicySet": {"Ingress": ingress}},
@@ -215,17 +258,30 @@ def show_rules(tag: str, ingress: list):
 
 # --------------------------------------------------------------------------- #
 def main():
-    ap = argparse.ArgumentParser(description="腾讯云安全组收口（ECAS relay 8883）")
-    ap.add_argument("cmd", choices=["show", "plan", "apply"])
+    ap = argparse.ArgumentParser(description="腾讯云安全组收口（ECAS relay 8883 / 冗余放行清理）")
+    ap.add_argument("cmd", choices=["show", "plan", "apply", "drop", "trim"],
+                    help="show/plan/apply = 收窄 8883 来源；drop/trim = 删除冗余放行规则")
     ap.add_argument("--instance", default=DEFAULT_INSTANCE)
     ap.add_argument("--region", default=DEFAULT_REGION)
     ap.add_argument("--port", default=DEFAULT_PORT)
     ap.add_argument("--allow", action="append", default=None,
                     help=f"白名单网段，可重复；默认 {DEFAULT_ALLOW}")
-    ap.add_argument("--confirm", action="store_true", help="apply 时真写；缺省只打印")
+    ap.add_argument("--drop", action="append", default=None, dest="drops",
+                    help="要删除的放行规则，形如 12121 / 11012 / 21212/TCP；可重复")
+    ap.add_argument("--confirm", action="store_true", help="apply/drop/trim 时真写；缺省只打印")
     args = ap.parse_args()
 
     allow = args.allow or [DEFAULT_ALLOW]
+    if args.cmd == "trim":
+        specs = args.drops or DEFAULT_DROPS
+    elif args.cmd == "drop":
+        if not args.drops:
+            die("drop 需要 --drop <PORT[/PROTO]>（可重复）；只想删该组冗余可直接用 trim")
+        specs = args.drops
+    else:
+        specs = []
+    deleting = args.cmd in ("drop", "trim")
+
     sid, skey = need_keys()
     sgs = instance_security_groups(args.instance, args.region, sid, skey)
 
@@ -234,15 +290,31 @@ def main():
         ingress = rules.get("Ingress") or []
         show_rules(f"{sg} 当前入站（{len(ingress)} 条）", ingress)
 
-        new_ingress, changes = build_new_ingress(ingress, args.port, allow)
-        print(f"\n端口 {args.port} 的处置：")
-        for kind, old, new, port in changes:
-            print(f"  [{kind}] {port}: {old} → {new}")
-        if not changes:
-            print("  (无匹配规则)")
-        show_rules(f"{sg} 拟改为（{len(new_ingress)} 条）", new_ingress)
+        if deleting:
+            print(f"\n拟删除的放行规则（规格：{', '.join(specs)}）：")
+            new_ingress, changes = build_drops(ingress, specs)
+            if not changes:
+                print("  (无匹配行——可能已经删过了)")
+            for kind, spec, proto_port, cidr, desc in changes:
+                print(f"  [{kind}] 规格 {spec} ← {proto_port} {cidr} {desc}")
+            missing = [s for s in specs
+                       if not any(spec == s for _, spec, _, _, _ in changes)]
+            if missing:
+                print(f"  ⚠️ 未命中（请核对 CSV/实际情况）：{', '.join(missing)}")
+            show_rules(f"{sg} 拟改为（{len(new_ingress)} 条，删 {len(changes)} 条）", new_ingress)
+        else:
+            new_ingress, changes = build_new_ingress(ingress, args.port, allow)
+            print(f"\n端口 {args.port} 的处置：")
+            for kind, old, new, port in changes:
+                print(f"  [{kind}] {port}: {old} → {new}")
+            if not changes:
+                print("  (无匹配规则)")
+            show_rules(f"{sg} 拟改为（{len(new_ingress)} 条）", new_ingress)
 
-        if args.cmd != "apply" or not args.confirm:
+        if args.cmd == "show":
+            print("\n（show：未做任何写入）")
+            continue
+        if args.cmd == "plan" or not args.confirm:
             print("\n（只读模式：未做任何写入。真改请加 --confirm）")
             continue
 
@@ -256,11 +328,19 @@ def main():
         apply_ingress(sg, new_ingress, args.region, sid, skey)
         after = (get_policies(sg, args.region, sid, skey).get("Ingress") or [])
         show_rules(f"{sg} 改动后（校验）", after)
-        ok = all(not is_broad(r.get("CidrBlock", ""))
-                 for r in after
-                 if r.get("Action") == "ACCEPT" and port_hit(r.get("Port", ""), args.port))
-        print(f"\n{'✓ 收口校验通过' if ok else '✗ 校验失败：仍存在 0.0.0.0/0 来源'}："
-              f"端口 {args.port} 的所有 ACCEPT 规则来源均为具体网段")
+
+        if deleting:
+            left = [f"{r.get('Protocol')}/{r.get('Port')} {r.get('CidrBlock')}"
+                    for r in after if any(spec_hit(r, s) for s in specs)]
+            ok = not left
+            print(f"\n{'✓ 删除校验通过' if ok else '✗ 校验失败：仍有命中规格的放行行 ' + '; '.join(left)}："
+                  f"{len(after)} 条入站（原 {len(ingress)} 条）")
+        else:
+            ok = all(not is_broad(r.get("CidrBlock", ""))
+                     for r in after
+                     if r.get("Action") == "ACCEPT" and port_hit(r.get("Port", ""), args.port))
+            print(f"\n{'✓ 收口校验通过' if ok else '✗ 校验失败：仍存在 0.0.0.0/0 来源'}："
+                  f"端口 {args.port} 的所有 ACCEPT 规则来源均为具体网段")
         if not ok:
             sys.exit(2)
 

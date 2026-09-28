@@ -1224,6 +1224,35 @@ python3 tighten-security-group.py apply --confirm     # 落地（先自动备份
 - `easytier-web --help` 有 `--disable-registration` 开关，容器**未传** ⇒ **注册入口默认开放**（有验证码，但不是准入控制）。
 - 建议：(a) 安全组删 12121，改 `ssh -L 12121:127.0.0.1:12121 ecas` 隧道（比照 8888 宝塔）；或 (b) 加 `--disable-registration` + 强口令。
 
+**先生已定（2026-09-28）**：按 (a) 执行 + 清理冗余。**待执行清单（5 条入站放行行，27 → 22）**：
+
+| 删除 | 协议/端口 | 理由 |
+| --- | --- | --- |
+| 1 | `TCP 12121` ← `0.0.0.0/0` | 控制面改走 SSH 隧道 |
+| 2–3 | `TCP 11012` + `UDP 11012` ← `0.0.0.0/0` | 该端口**完全无监听** |
+| 4 | `TCP 21212` ← `0.0.0.0/0` | 无 TCP 监听（**保留 `UDP 21212`**：设备取配置口） |
+| 5 | `TCP 11011` ← `0.0.0.0/0` | 无 TCP 监听（**保留 `UDP 11011`**：easytier-core 在用） |
+
+**执行方式**（两条路，任选）：
+
+```bash
+# ① 有腾讯云密钥时（建议只有 VPC 读写权限的临时子账号密钥，用完即禁用/删除）
+export TENCENTCLOUD_SECRET_ID=... TENCENTCLOUD_SECRET_KEY=...
+./web/deploy/cloud/tighten-security-group.py show              # 先只读看现状
+./web/deploy/cloud/tighten-security-group.py trim              # 只读预览这次要删哪 5 条
+./web/deploy/cloud/tighten-security-group.py trim --confirm    # 真删（自动备份规则 JSON + 回读校验）
+
+# ② 控制台手工：安全组 → 入站规则 → 按上表删 5 行（拒绝类规则一律别动）
+```
+
+删完 12121 后，Dashboard 改走隧道（本机浏览器开 `http://127.0.0.1:12121`）：
+
+```bash
+ssh -N -L 12121:127.0.0.1:12121 ecas     # 需要时开；关掉隧道 = 控制面彻底不可达（符合预期）
+```
+
+**验后复测**：从 Mac 探 `12121`/`11012` 应超时（原本可达的现在是不可达），`21212`/`11011` 的 **UDP** 仍应被 mesh 设备正常使用（数据面/叠加网不受影响）。
+
 **排障要诀（分层判定）**：想确认「包是哪一层丢的」，先看主机侧——`fw allow <你的出口 IP>/32` 之后**仍连不上**，就说明挡在**安全组**（主机已放行）；验证完记得 `fw deny <IP>/32` 还原。本机出口 IP 用 `ssh ecas 'echo $SSH_CLIENT'` 查。
 
 **安全组怎么改**：控制台由先生操作，或用 `web/deploy/cloud/tighten-security-group.py`（`show|plan|apply --confirm`，密钥只从 `TENCENTCLOUD_SECRET_ID/KEY` 环境变量读，`apply` 自动备份 `tighten-sg-backup-<stamp>.json`）。
