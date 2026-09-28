@@ -1,0 +1,22 @@
+[Unit]
+Description=ECAS MQTT relay (plaintext DTU in -> TLS bridge out; no persistence)
+Documentation=man:mosquitto.conf(5)
+After=network-online.target
+Wants=network-online.target
+# 本实例独占 8883；主 broker（mosquitto.service）必须不再监听 8883
+Before=mosquitto.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/sbin/mosquitto -c /etc/mosquitto/relay/relay.conf
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=3
+ExecStartPre=/bin/mkdir -m 740 -p /var/log/mosquitto
+ExecStartPre=/bin/chown mosquitto:mosquitto /var/log/mosquitto
+ExecStartPre=/bin/mkdir -m 740 -p /run/mosquitto-relay
+ExecStartPre=/bin/chown mosquitto:mosquitto /run/mosquitto-relay
+
+[Install]
+WantedBy=multi-user.target

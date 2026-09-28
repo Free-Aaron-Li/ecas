@@ -47,7 +47,7 @@
 | **M-03** 令牌缺失时 fail-open | ✅ **已改 fail-closed** | `token_ok()` 无期望值即 False；`/api/*` 未配置令牌返回 **503**（文案指路 `ECAS_ALLOW_NO_AUTH=1`）；`entrypoint.sh` 令牌文件缺失/为空 **`exit 1`**，不再「警告后裸跑」；本机四组裸跑 + 真进程探针复现通过；单测 77 passed |
 | **H-03** IP 入口自签证书 + 无 HSTS | ✅ **已降级为纯跳转** | `web/deploy/cloud/nginx/ecas-edge.conf` 删掉全部 `proxy_pass`：80/443 一律 **301 → https://gateway.xshky.org**，只留本地 `location = /healthz` 返回 200（健康检查不能依赖外网）；云端实测 `/`·`/docs` **301**、`/healthz` **200**；HSTS 改由**正式域名**侧下发（Worker `secHeaders()` 增 `strict-transport-security: max-age=15552000`，不加 `includeSubDomains`），自签侧继续不开（写进注释说明原因） |
 | **L-07** mosquitto `conf.d/ecas.conf` 匿名残留 | ✅ **已移出** | 云机 `/etc/mosquitto/conf.d/ecas.conf` → `/etc/mosquitto/ecas.conf.disabled-20260928-110154`；确认 `mosquitto.conf` 的 `include_dir` 仍是注释（该文件此前从未生效） |
-| **H-01** DTU 明文 8883 | ⏳ 按先生方案改为「独立转发机」 | 明文问题 DTU 侧无法解决；改为在腾讯云机上做只转发的 MQTT 中继，**不落原始数据**（待施工） |
+| **H-01** DTU 明文 8883 | ✅ **已按先生方案处置（独立转发机）** | 明文口从持有数据的 broker 摘出，交给只转发、**不落任何数据**的 `ecas-mqtt-relay`（腾讯云机）：现场 DTU → 明文 8883 → relay（`persistence false`、无本地订阅者、ACL 只允许 `dpro66-dtu` 写 `dpro66`）→ **TLS 8884（桥接账号 `ecas-bridge`）** → 主 broker。主 broker 的 `listener 8883` 已注释（实测 `grep -c '^listener 8883'` = **0**）。线上实测：8883 归属 relay（pid 2635348）、`New bridge connected … u'ecas-bridge'`、DTU `dpro66-01 (u'dpro66-dtu')` 重新连上 relay、`raw_reading` 继续增长（11:13:32 → 11:18:32 共 +2 条，切换仅丢约 2 拍） |
 | **H-02** 共享生产机 + `ubuntu ∈ docker` | ⛔ 先生明确不迁移 | 老项目太多、无法搬迁；缓解措施见 §4「短期」 |
 
 ---
@@ -58,8 +58,14 @@
 
 ```
 DPRO-66 浓度计 (4~20 mA)
-   └─ 塔石 DTU (TAS-KS-301)  ── 明文 MQTT 8883 ──▶  腾讯云 mosquitto 2.x
-       用户 dpro66-dtu（只写 dpro66）                    ├─ 8883 明文（现场入口）      ⚠️ H-01
+   └─ 塔石 DTU (TAS-KS-301)  ── 明文 MQTT 8883 ──▶  ecas-mqtt-relay（腾讯云机，只转发）
+       用户 dpro66-dtu（只写 dpro66）                   ├─ persistence false（不落盘）
+                                                          ├─ ACL 只允许 dpro66-dtu 写 dpro66
+                                                          └─ 桥接 TLS 8884（账号 ecas-bridge，只写 dpro66）
+                                                                   │
+                                                                   ▼
+                          腾讯云 mosquitto 2.x（持有数据的一侧）
+                                                          ├─ ~~8883 明文~~（已注释，不再监听）  ✅ H-01
                                                           ├─ 8884 TLS（叠加网入口）
                                                           └─ 1883 仅 127.0.0.1
                                                                    │
@@ -126,6 +132,25 @@ DPRO-66 浓度计 (4~20 mA)
 2. **每台设备独立凭据**（现在全网共用 `dpro66-dtu`），并为内容侧加时间戳/序号字段，采集端做重放与跳变检测（现有「冒名检测」watchdog 可作为基础）。
 3. 轮换 `dpro66-dtu` / `ecas-monitor` 口令（假设 8883 期间的口令已可能被观察）。
 4. Broker 侧打开审计日志（`log_type all`），保留 CONNECT/PUBLISH 来源，便于事后溯源。
+
+**处置（2026-09-28 已落地，先生裁定「单独采用 1 台服务器做数据转发，不直接触碰原始数据」）**
+
+DTU 固件只认明文 MQTT、连端口都写死 8883 ⇒ 现场侧无法加密，于是改**换手**：让一个不持有数据的实例去承受明文入口。
+
+| 环节 | 事实 |
+|---|---|
+| 拓扑 | `现场 DTU --明文 8883--> ecas-mqtt-relay --TLS 8884(桥接账号 ecas-bridge)--> 主 broker --...--> 采集器` |
+| 转发实例的硬性质 | `persistence false` / `autosave_interval 0`（**不落盘**，重启不留数据）；无本地订阅者；`queue_qos0_messages false` + `max_queued_messages 100`（内存最多压 100 条）；ACL 默认拒绝、只有 `dpro66-dtu` 能写 `dpro66` |
+| 主 broker | `listener 8883` 已注释（`grep -c` = 0）；8884 TLS（`ecas-monitor` 只读采集、`ecas-bridge` 只写桥接）、1883 仍只绑 127.0.0.1 |
+| 凭据 | 新增桥接账号 `ecas-bridge`：口令 32 字符 base64url 双存（`/Volumes/keys/ecas/mqtt.toml` + 钥匙串 `ecas/mqtt.toml#bridge_password`，sha256[:12]=`07b4e8712f52`）；服务器上只有 `/etc/mosquitto/relay/relay.conf`（640 root:mosquitto）持有桥接口令明文——mosquitto 桥接的硬要求 |
+| 交付物 | `web/deploy/cloud/mqtt-relay/{relay-mosquitto.conf,relay-acl.conf,ecas-mqtt-relay.service}` + `web/deploy/cloud/deploy-cloud-mqtt-relay.sh`（`stage/test/swap/verify/status/logs/rollback/all`） |
+| 线上证据 | 8883 socket 归属 `mosquitto` pid 2635348 = relay；relay 日志 `New client connected from 180.108.106.59 as dpro66-01 (…, u'dpro66-dtu')`；主 broker 日志 `New bridge connected from 127.0.0.1:45438 as VM-0-13-opencloudos.ecas-main (…, u'ecas-bridge')`；切换后 `raw_reading` 由 11:13:32（2160 行）继续到 11:18:32（2162 行）⇒ 数据面未断（切换仅丢约 2 拍） |
+| 缩小暴露 | 明文口只存在于「无数据、单主题可写」的实例上；桥接走**回环** `127.0.0.1:8884`（不出主机）；ECAS 公网面收敛为 80/443（纯 301 跳转）+ 8883（DTU 必需） |
+
+**残留风险（如实记录，未消除）**
+
+- 明文口本身仍在公网（DTU 必须能连），只是不再由持有数据的 broker 承担 ⇒ 窃听者仍可拿到 `dpro66-dtu` 口令并**向 `dpro66` 投毒**（与处置前同级的完整性风险），减少的是「一台无数据实例被攻破 ⇒ 拿不到数据/拿不到高权凭据」。
+- 建议后续：轮换 `dpro66-dtu` 口令、给 relay 的 8883 加**安全组来源 IP 白名单**（DTU 出口 IP `180.108.106.59`，需确认是否为固定 IP；若是动态则不可用）、采集侧加序号/时间戳做重放与跳变检测。
 
 #### H-02 · ECAS 与另一套多容器生产栈同机，`ubuntu ∈ docker`
 
@@ -359,8 +384,9 @@ KbdInteractiveAuthentication no
 
 ### 立即（本周）
 
-1. **H-01**：给 DTU 通道上加密（迁 8884 / 加隧道），并**轮换** `dpro66-dtu` 与 `ecas-monitor` 口令；开启 Broker 审计日志。
+1. **H-01** ✅（2026-09-28 已做）：明文口从持有数据的 broker 摘出，交给 `ecas-mqtt-relay`（腾讯云机，只转发不落盘）；主 broker 不再监听 8883；桥接走回环 + 专用最小权限账号 `ecas-bridge`。
    —— 先生 2026-09-28 裁定：明文无法在 DTU 侧解决 ⇒ 改为「单独 1 台服务器做数据转发，不直接触碰原始数据」（转发机＝腾讯云机，其上已有 easytier 服务）。
+   —— **未消除**：明文公网口仍在（DTU 必需）⇒ 仍需轮换 `dpro66-dtu` 口令、考虑 8883 来源 IP 白名单、采集侧加序号做重放检测。
 2. **H-03** ✅（2026-09-28 已做）：IP 入口改为「仅 301 跳域名」；HSTS 由正式域名侧（Worker）下发，自签侧不开。
 3. **M-01 + M-02** ✅（2026-09-28 已做）：关闭生产文档；内部令牌与对外令牌分离；edge 不再有任何反代路径（`/internal/`·`/docs`·`/redoc`·`/openapi.json` 全部 301 走人）。
 4. **M-03** ✅（2026-09-28 已做）：fail-closed（entrypoint 缺 secret 即 `exit 1`；`token_ok` 未配置返回 False）。
