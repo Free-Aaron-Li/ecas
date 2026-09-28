@@ -70,9 +70,27 @@ class Settings(BaseSettings):
     #: 浏览器侧把令牌同时写进 Cookie（同名），便于刷新后直接带上下文
     auth_cookie: bool = True
 
+    #: 内部账户接口（`/internal/accounts*`）**专用**令牌（安全审查 M-02 的修法）。
+    #: 空 = 沿用 `auth_token`（过渡期兼容旧部署）；设置后 `/api/*` 的令牌**不再**能调内部接口，
+    #: 于是「浏览器可见的那把钥匙」与「管账号的那把钥匙」分家。
+    #: 由 `ECAS_INTERNAL_TOKEN` 注入（容器里来自 `/run/secrets/internal-token`）。
+    internal_token: str = ""
+
+    #: ⚠️ 是否允许「没配令牌就放行」——**只给本机开发**（安全审查 M-03 的修法）。
+    #: 生产 fail-closed：`auth_token` 为空时 `/api/*` 一律 503、容器入口直接拒绝启动。
+    allow_no_auth: bool = False
+
+    #: 是否暴露 FastAPI 自带的 `/docs`、`/redoc`、`/openapi.json`（安全审查 M-01 的修法）。
+    #: **默认关**：接口清单本身是攻击者的地图，公网入口与边缘都不该提供。
+    enable_docs: bool = False
+
     @property
     def auth_required(self) -> bool:
         return bool(self.auth_token)
+
+    @property
+    def internal_required(self) -> bool:
+        return bool(self.internal_token or self.auth_token)
 
 
 @lru_cache

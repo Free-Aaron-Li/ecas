@@ -1,0 +1,13 @@
+[Unit]
+# ECAS 本地栈 · 每日数据库备份（配合 ecas-backup.timer）
+Description=ECAS 本地栈数据库备份
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/ecas
+ExecStart=/opt/ecas/backup/ecas-backup.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6

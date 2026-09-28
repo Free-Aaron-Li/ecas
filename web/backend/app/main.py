@@ -21,7 +21,10 @@
 
 鉴权（见 `app/auth.py`）：设了 `ECAS_AUTH_TOKEN` 就对 `/api/*` 与 `/ws/readings` 生效，
 令牌可放 `Authorization: Bearer <t>`、`?token=<t>` 或 Cookie `ecas_token`；
-**没设令牌 = 开发模式（放行）**，启动日志会写明，避免"以为开了其实没开"。
+**没设令牌 = fail-closed**（`/api/*` 一律 503、容器入口拒绝启动），只有显式
+`ECAS_ALLOW_NO_AUTH=1` 的本机开发才放行（2026-09-28 安全审查 M-03）。
+账户内部接口 `/internal/accounts*` 另有专用令牌 `ECAS_INTERNAL_TOKEN`（M-02）；
+`/docs`·`/redoc`·`/openapi.json` 默认**关闭**（M-01），临时要看设 `ECAS_ENABLE_DOCS=1`。
 
 设计约束（与项目分层约定一致）：
 * 换算口径只有一处实现（`app/convert.py`），接口只输出结果，前端不重算；
@@ -180,10 +183,24 @@ async def lifespan(app: FastAPI):
     log.info("ECAS 后端启动：http://%s:%s（DSN 不含口令）", settings.host, settings.port)
     if settings.auth_required:
         log.info("访问令牌校验：已启用（%d 位，来源 ECAS_AUTH_TOKEN）", len(settings.auth_token))
-    else:
+    elif settings.allow_no_auth:
         log.warning(
-            "访问令牌校验：**未启用**（ECAS_AUTH_TOKEN 为空）——仅适合只监听 127.0.0.1 的开发模式，发布前必须设置"
+            "访问令牌校验：**未启用**，但 ECAS_ALLOW_NO_AUTH=1 ⇒ 放行 —— 只允许本机开发，发布前必须撤掉"
         )
+    else:
+        log.error(
+            "访问令牌校验：**未启用**（ECAS_AUTH_TOKEN 为空）⇒ 按 fail-closed，所有 /api/* 一律 503。"
+            "本机开发请显式设 ECAS_ALLOW_NO_AUTH=1"
+        )
+    if settings.internal_required:
+        log.info(
+            "内部账户接口令牌：%s",
+            "用 ECAS_INTERNAL_TOKEN（与对外令牌分离）" if settings.internal_token else "回退 ECAS_AUTH_TOKEN（过渡期，建议尽快分离）",
+        )
+    else:
+        log.warning("内部账户接口：未配置任何令牌 ⇒ /internal/accounts* 一律 503")
+    if not settings.enable_docs:
+        log.info("接口文档：已关闭（/docs、/redoc、/openapi.json 均 404）")
     try:
         await asyncio.to_thread(alarms.ensure_schema, pool)
     except Exception as exc:
@@ -209,7 +226,23 @@ async def lifespan(app: FastAPI):
         log.info("ECAS 后端退出，连接池已关闭")
 
 
-app = FastAPI(title="ECAS 后端", version="0.1.0", lifespan=lifespan)
+def _docs_kwargs(settings: Settings) -> dict[str, str | None]:
+    """安全审查 M-01：默认**不**暴露 `/docs`、`/redoc`、`/openapi.json`。
+
+    接口清单是攻击者最省事的地图（`/openapi.json` 连 `/internal/*` 的参数都写清楚）。
+    真有需要（本机调试）再 `ECAS_ENABLE_DOCS=1` 打开。
+    """
+    if settings.enable_docs:
+        return {"docs_url": "/docs", "redoc_url": "/redoc", "openapi_url": "/openapi.json"}
+    return {"docs_url": None, "redoc_url": None, "openapi_url": None}
+
+
+app = FastAPI(
+    title="ECAS 后端",
+    version="0.1.0",
+    lifespan=lifespan,
+    **_docs_kwargs(get_settings()),
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=get_settings().cors_origins,
@@ -217,7 +250,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-#: 账户内部 API（`/internal/accounts*`，只有网关 Worker 凭 ECAS_AUTH_TOKEN 能调）。
+#: 账户内部 API（`/internal/accounts*`，只有网关 Worker 凭 `ECAS_INTERNAL_TOKEN` 能调，
+#: 没配就回退 `ECAS_AUTH_TOKEN`）。
 #: ⚠️ 必须在下面 `app.mount("/", StaticFiles...)` **之前**注册，否则会被静态站挂载吞掉。
 app.include_router(accounts.router)
 

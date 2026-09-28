@@ -26,10 +26,38 @@ def _settings(client: TestClient):
     return client.app.state.settings
 
 
-def test_未配置令牌时是开发模式_放行(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_未配置令牌时_fail_closed(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """2026-09-28 安全审查 M-03：没配令牌**不放行**，而是 503 + 一句指路的话。
+
+    （`conftest.py` 给整个测试会话设了 `ECAS_ALLOW_NO_AUTH=1`，所以这里要显式关掉它。）
+    """
     monkeypatch.setattr(_settings(client), "auth_token", "")
-    assert client.get("/api/auth").json()["auth_required"] is False
+    monkeypatch.setattr(_settings(client), "allow_no_auth", False)
+    assert client.get("/api/auth").json()["auth_required"] is False  # 值守门状态本身照常可读
+    resp = client.get("/api/params")
+    assert resp.status_code == 503
+    assert "fail-closed" in resp.json()["detail"]
+    assert "ECAS_ALLOW_NO_AUTH" in resp.json()["detail"]
+
+
+def test_显式声明本机开发才放行(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_settings(client), "auth_token", "")
+    monkeypatch.setattr(_settings(client), "allow_no_auth", True)
     assert client.get("/api/params").status_code == 200
+
+
+def test_文档默认关闭(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """M-01：`/docs`·`/redoc`·`/openapi.json` 默认不给（接口清单是攻击者的地图）。"""
+    from app.main import _docs_kwargs
+
+    settings = _settings(client)
+    assert settings.enable_docs is False
+    assert client.get("/docs").status_code == 404
+    assert client.get("/redoc").status_code == 404
+    assert client.get("/openapi.json").status_code == 404
+    # 需要时（本机调试）能被显式打开
+    monkeypatch.setattr(settings, "enable_docs", True)
+    assert _docs_kwargs(settings) == {"docs_url": "/docs", "redoc_url": "/redoc", "openapi_url": "/openapi.json"}
 
 
 def test_配置令牌后必须带对(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

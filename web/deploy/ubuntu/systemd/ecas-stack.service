@@ -1,0 +1,30 @@
+[Unit]
+Description=ECAS 浓度计测试栈（PostgreSQL + FastAPI/前端 + TLS 采集器）
+Documentation=file:/opt/ecas/README.md
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/ecas
+
+# 凭据源：/opt/ecas/credentials/{pg-password,auth-token,mqtt-pass}
+#   目录 700、文件 600、属主 root —— 只有 root 读得到；compose 读成 container secret
+#   路径由 /opt/ecas/.env 的 CREDENTIALS_DIRECTORY 指定（那里只有路径，没有口令值）
+# ⚠️ 本机是 Ubuntu 22.04 / systemd 249，**没有 systemd-creds**，云端那套
+#   「加密凭据 + LoadCredentialEncrypted」用不了；先生 2026-09-26 同意本测试机破例
+#   用 600 明文（已记入密钥卷 README 与安全审计日志）。升级到 24.04+ 后可改成：
+#     LoadCredentialEncrypted=pg-password:/opt/ecas/credentials/pg-password.cred
+#     LoadCredentialEncrypted=auth-token:/opt/ecas/credentials/auth-token.cred
+#     LoadCredentialEncrypted=mqtt-pass:/opt/ecas/credentials/mqtt-pass.cred
+
+ExecStart=/usr/bin/docker compose up -d --remove-orphans
+ExecStartPost=/usr/bin/docker compose ps
+ExecStop=/usr/bin/docker compose down
+TimeoutStartSec=900
+TimeoutStopSec=180
+
+[Install]
+WantedBy=multi-user.target

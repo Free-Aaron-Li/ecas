@@ -1,0 +1,151 @@
+# ============================================================================
+# ECAS 浓度计 · Ubuntu Super Server 测试栈（先生 2026-09-26 选定的 A 方案：Docker Compose）
+#
+# 三个容器：
+#   db        PostgreSQL 16 —— 新建库，只存「型号 / 时间 / 原始值」（表 raw_reading，跑 001_init.sql）
+#             告警表 alarm_config/alarm_event 由后端启动时自建（app/alarms.py）
+#   api       FastAPI 后端 + 前端静态产物（同一进程托管，不再引 nginx）
+#             只绑 mesh 网卡 10.10.10.11:18080 ⇒ 公网/局域网都到不了，只有 easytier 内的机器能开
+#             （⚠️ 这台机上 0.0.0.0:8080 已被生产容器 side.base.apigateway 占用，实测 bind 冲突）
+#   collector TLS 连云端 Mosquitto(8884, 只读账号 ecas-monitor) → 管道给现成的 dpro66_monitor.sh --pipe → 写库
+#             走 mesh 到 10.10.10.123:8884（公网 8884 未放行安全组）；证书用「链校验 + 指纹钉扎」
+#
+# ⛔ 口令不在这个文件里，也不在 .env / 命令行 / 日志里：
+#    放在**容器 secret 的源文件** /opt/ecas/credentials/{pg-password,auth-token,mqtt-pass}
+#    （目录 700、文件 600、属主 root —— 只有 root 与容器内进程读得到），
+#    compose 把它们挂成容器里的 /run/secrets/<名字>，后端/采集器由 entrypoint 现造成
+#    /tmp/pgpass 与 paho 的 password-file，不进 argv、不进环境变量的值。
+#    ⚠️ 目标机是 Ubuntu 22.04 / systemd 249，**没有 systemd-creds**，所以云端那套
+#      「加密凭据 + LoadCredentialEncrypted」在这台测试机上用不了；先生 2026-09-26
+#      同意此测试机破例用 600 明文文件（已记入密钥卷 README 与安全审计日志）。
+#      日后整机升级到 24.04+ 再换回 systemd 加密凭据，无需改这个文件（只换来源）。
+#    手工调试可 `CREDENTIALS_DIRECTORY=./credentials docker compose up -d`（用完删）。
+#
+# 常用命令（在 /opt/ecas）：
+#   systemctl start ecas-stack        起（开机自启已 enable）
+#   systemctl stop  ecas-stack        停
+#   docker compose ps                 看状态
+#   docker compose logs -f collector  看采集端
+#   docker compose exec db psql -U ecas -d ecas -c 'select count(*) from raw_reading;'
+# ============================================================================
+name: ecas
+
+services:
+  # ── 数据库 ────────────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: ecas-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${PG_USER:-ecas}
+      POSTGRES_DB: ${PG_NAME:-ecas}
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg-password
+      TZ: Asia/Shanghai
+    secrets: [pg-password]
+    volumes:
+      # 数据落在 44T 数据盘（不是系统盘 /）
+      - /data/ecas/pgdata:/var/lib/postgresql/data
+      # 只在**首次**初始化空库时执行；001 是幂等的，重复启动不会重复建表
+      - ./sql/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-ecas} -d ${PG_NAME:-ecas}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    security_opt: ["no-new-privileges:true"]
+    networks: [ecas]
+
+  # ── 后端 + 前端包 ────────────────────────────────────────────────────────
+  api:
+    build:
+      context: ./backend
+      args:
+        PIP_INDEX: ${PIP_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}
+    image: ecas-api:local
+    container_name: ecas-api
+    restart: unless-stopped
+    read_only: true
+    tmpfs: ["/tmp:mode=1777,size=16m"]
+    environment:
+      # DSN 里没有口令：口令走 PGPASSFILE（entrypoint 从 container secret 现造，见 backend/entrypoint.sh）
+      ECAS_DSN: postgresql://${PG_USER:-ecas}@db:5432/${PG_NAME:-ecas}
+      AUTH_TOKEN_FILE: /run/secrets/auth-token
+      # M-02（2026-09-28 安全审查）：账号内部接口用**另一把**令牌；没挂这个 secret 时
+      # entrypoint 会警告并让 /internal/* 沿用对外令牌（过渡期兼容）。
+      INTERNAL_TOKEN_FILE: /run/secrets/internal-token
+      ECAS_MODEL_NAME: ${MODEL_NAME:-DPRO-66}
+      ECAS_HOST: 0.0.0.0
+      ECAS_PORT: "8000"
+      ECAS_ALARM_SCAN: "1"
+      ECAS_ALARM_SCAN_SECONDS: "60"
+      ECAS_OFFSET_MODE: ${OFFSET_MODE:-add}
+      ECAS_OFFSET_CONC: ${OFFSET_CONC:-0.48}
+      TZ: Asia/Shanghai
+    secrets: [pg-password, auth-token, internal-token]
+    volumes:
+      # 前端产物：必须挂在 /srv/web/frontend/dist（后端按 parents[2] 找它）
+      - ./frontend-dist:/srv/web/frontend/dist:ro
+    ports:
+      # 只绑 mesh 地址：外面（公网/办公网）扫不到
+      # ⚠️ 目标机 0.0.0.0:8080 已被生产容器 side.base.apigateway 占用 ⇒ 测试栈用 18080
+      #    BIND_IP 用 `:?` 强制要求：万一 .env 漏了，宁可起不来，也不许退化成 0.0.0.0 全开
+      - "${BIND_IP:?需要 BIND_IP（mesh 地址，如 10.10.10.11）}:${ECAS_WEB_PORT:-18080}:8000"
+    depends_on:
+      db: {condition: service_healthy}
+    security_opt: ["no-new-privileges:true"]
+    networks: [ecas]
+
+  # ── 采集器 ───────────────────────────────────────────────────────────────
+  collector:
+    build:
+      context: ./collector
+      args:
+        PIP_INDEX: ${PIP_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        APT_MIRROR: ${APT_MIRROR:-mirrors.tuna.tsinghua.edu.cn}
+    image: ecas-collector:local
+    container_name: ecas-collector
+    restart: unless-stopped
+    init: true
+    environment:
+      MQTT_HOST: ${MQTT_HOST:?需要 MQTT_HOST}
+      MQTT_PORT: ${MQTT_PORT:-8884}
+      MQTT_TOPIC: ${MQTT_TOPIC:-dpro66}
+      MQTT_USER: ${MQTT_USER:-ecas-monitor}
+      MQTT_PASS_FILE: /run/secrets/mqtt-pass
+      MQTT_CAFILE: /etc/ecas/ca.crt
+      # 证书指纹钉扎：8884 未放行安全组 ⇒ 走 mesh 连 10.10.10.123:8884，
+      # 而 server.crt 的 SAN 里没有该地址 ⇒ 关主机名校验，改用 leaf 证书 SHA-256 指纹钉扎
+      # （链校验仍 CERT_REQUIRED）。指纹不是秘密（公开证书的摘要）。
+      # 云端重签证书后必须更新这个值，否则采集器 fail closed 拒绝订阅。
+      MQTT_CERT_SHA256: ${MQTT_CERT_SHA256:-}
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_USER: ${PG_USER:-ecas}
+      DB_NAME: ${PG_NAME:-ecas}
+      DB_MODEL: ${MODEL_NAME:-DPRO-66}
+      OFFSET_CONC: ${OFFSET_CONC:-0.48}
+      TZ: Asia/Shanghai
+    secrets: [mqtt-pass, pg-password]
+    volumes:
+      # CA 证书不是秘密（公开证书），可以直接放文件
+      - ./secrets/ca.crt:/etc/ecas/ca.crt:ro
+    depends_on:
+      db: {condition: service_healthy}
+    security_opt: ["no-new-privileges:true"]
+    networks: [ecas]
+
+# ⛔ 源文件来自 systemd 解密的凭据目录（root 0400）；名字 → 容器里的 /run/secrets/<名字>
+secrets:
+  pg-password:
+    file: ${CREDENTIALS_DIRECTORY:-./credentials}/pg-password
+  auth-token:
+    file: ${CREDENTIALS_DIRECTORY:-./credentials}/auth-token
+  internal-token:
+    file: ${CREDENTIALS_DIRECTORY:-./credentials}/internal-token
+  mqtt-pass:
+    file: ${CREDENTIALS_DIRECTORY:-./credentials}/mqtt-pass
+
+networks:
+  ecas:
+    driver: bridge

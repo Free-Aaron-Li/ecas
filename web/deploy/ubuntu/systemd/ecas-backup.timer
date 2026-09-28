@@ -1,0 +1,11 @@
+[Unit]
+# ECAS 本地栈 · 每天 03:30 备份数据库（数据库唯一副本在本机，必须有备份）
+Description=每天 03:30 备份 ECAS 本地数据库
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

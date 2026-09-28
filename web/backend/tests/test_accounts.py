@@ -87,6 +87,14 @@ def test_令牌没配置时拒绝而不是放行(client: TestClient, monkeypatch
     assert client.get("/internal/accounts").status_code == 503
 
 
+def test_内部令牌与对外令牌分离(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """安全审查 M-02：配了 `internal_token` 后，**对外**那把令牌不能再管账号。"""
+    monkeypatch.setattr(client.app.state.settings, "auth_token", "public-token")
+    monkeypatch.setattr(client.app.state.settings, "internal_token", "internal-token")
+    assert client.get("/internal/accounts", headers={"authorization": "Bearer public-token"}).status_code == 401
+    assert client.get("/internal/accounts", headers={"authorization": "Bearer internal-token"}).status_code == 200
+
+
 # ── API：增删改查 ─────────────────────────────────────────────────────────
 def test_创建校验改密停用删除全链路(client: TestClient, auth: dict[str, str], name: str) -> None:
     try:

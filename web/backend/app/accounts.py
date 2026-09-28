@@ -328,12 +328,16 @@ def delete(pool: ConnectionPool, username: str) -> None:
 def require_internal_token(request: Request) -> None:
     """内部接口的闸门：**只认请求头 Bearer**，且令牌未配置时拒绝（不放行）。
 
+    令牌优先取 `ECAS_INTERNAL_TOKEN`（内部专用、浏览器看不到），没配才回退到
+    `ECAS_AUTH_TOKEN`（过渡期兼容旧部署）——安全审查 M-02：对外那把令牌不该能管账号。
+
     与 `app.auth.require_auth` 的区别：那个是给 `/api/*` 的对外闸门，允许 `?token=` 与 Cookie
     （浏览器下载/WS 用）；账户 CRUD 不外发，所以这里更严——查询串/ Cookie 一律不认。
     """
-    expected: str = request.app.state.settings.auth_token
+    settings = request.app.state.settings
+    expected: str = getattr(settings, "internal_token", "") or settings.auth_token
     if not expected:
-        raise HTTPException(503, "内部接口未启用：ECAS_AUTH_TOKEN 未设置")
+        raise HTTPException(503, "内部接口未启用：ECAS_INTERNAL_TOKEN / ECAS_AUTH_TOKEN 都未设置")
     provided = request.headers.get("authorization") or ""
     token = provided[7:].strip() if provided[:7].lower() == "bearer " else ""
     if not token or not hmac.compare_digest(token.encode("utf-8"), expected.encode("utf-8")):
