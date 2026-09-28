@@ -36,6 +36,12 @@ cd web/deploy/cloud
 ./deploy-cloud-mqtt-relay.sh verify     # 自检（监听归属 / 桥接 / 数据面是否继续入库）
 ./deploy-cloud-mqtt-relay.sh all        # stage + test + swap + verify
 ./deploy-cloud-mqtt-relay.sh rollback   # 回滚：停 relay 并恢复主 broker 的 8883 明文口
+./deploy-cloud-mqtt-relay.sh fw status  # 8883 来源白名单：unit 状态 + 规则 + 被拒计数 + 最近被拒来源
+./deploy-cloud-mqtt-relay.sh fw stage   # 装白名单规则/单元（先 nft -c 校验，不生效）
+./deploy-cloud-mqtt-relay.sh fw on      # 启用（8883 只放行白名单来源，其余 drop）
+./deploy-cloud-mqtt-relay.sh fw off     # 关闭（仅排障：关闭期间 8883 对所有来源开放）
+./deploy-cloud-mqtt-relay.sh fw allow 1.2.3.4/32   # 加白名单（改规则文件 + reload）
+./deploy-cloud-mqtt-relay.sh fw deny 1.2.3.4/32    # 去白名单（不允许移除 127.0.0.1）
 ```
 
 **自检判据**（`test` 输出）：日志出现 `Received CONNACK` **且** `Received PUBACK … RC:0`
@@ -51,10 +57,24 @@ cd web/deploy/cloud
 3. **`conf.d/` 是坑区**：主 broker 的 `mosquitto.conf` 里 `include_dir` 那一行**是注释**（第 904 行），
    所以放 `conf.d/` 的配置**从未生效**（曾有一份 `allow_anonymous true` 的残留躺在那里）。改配置请认准 `/etc/mosquitto/relay/relay.conf`。
 
+### 8883 来源白名单（2026-09-28 先生令「可以设定白名单」）
+
+nftables 表 `inet ecas_relay`：`8883` 只放行 `127.0.0.1` + `180.108.106.0/24`，其余 `drop`（同时限速记日志，前缀 `ecas-relay-drop`）；
+systemd `ecas-relay-firewall.service`（enabled、`Before=ecas-mqtt-relay.service`）负责开机持久化。
+
+- **为什么是 /24 而不是单个 IP**：主 broker 近 3 天日志里 `dpro66-dtu` 的来源是 `180.108.106.44` / `.58` / `.59`（客户端 ID 恒为 `dpro66-01`）
+  ⇒ 该段是现场出口**地址池**，写死单 IP 会在 DTU 重新拨号后断流。
+- **为什么用 nft 而不是 iptables**：本机 iptables 是 **legacy** 后端（1017 行 Docker 规则），而 `nft list ruleset` 为空 ⇒ 两套命名空间互不干扰；
+  且 nft 的 `drop` 是终局判决，Docker 的 `ACCEPT` 不会把包放过去。
+- **实测（2026-09-28 14:29）**：回环 `127.0.0.1:8883` 连上；云机自连自己公网 IP、Mac 出口 `218.88.248.132` 连 8883 都超时；
+  `counter packets 17`、内核日志 `ecas-relay-drop … SRC=218.88.248.132 … DPT=8883`；同期 `raw_reading` 继续入库（DTU 在白名单内，会话未断）。
+- **误伤兜底**：`ubuntu-super` 上 `ecas-watchdog.sh` 的 `fresh` 判据（`STALE_MIN=10` 分钟，现场节拍 ~100s）会在 10 分钟内 `crit` 播报。
+
 ### 残留风险（未消除，如实记录）
 
-明文口仍在公网（DTU 必须能连），只是不再由持有数据的 broker 承担。窃听者仍可能拿到 `dpro66-dtu` 口令并**向 `dpro66` 投毒**；
-后续可做：轮换 `dpro66-dtu` 口令、给 8883 加安全组来源 IP 白名单（DTU 出口 IP `180.108.106.59`，需确认是否固定）、采集侧加序号/时间戳做重放检测。
+明文口仍在公网（DTU 必须能连），只是不再由持有数据的 broker 承担。白名单已把随机来源的扫描/爆破挡在 TCP 层，
+但**同运营商段内的主机**与运营商侧链路仍可看到明文；后续可做：轮换 `dpro66-dtu` 口令、采集侧加序号/时间戳做重放检测、
+DTU 侧支持 TLS 后撤掉明文口（根治）。
 
 ## 二、公网 IP 入口 `ecas-edge`（安全审查 H-03）
 

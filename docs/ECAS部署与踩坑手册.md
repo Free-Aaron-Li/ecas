@@ -1120,6 +1120,54 @@ web/scripts/sync-from-cloud.sh    # ssh + pg_dump → 本地 ecas_dev（--clean 
 | 手机端「显示不对」无法复现 | 无真机 / 本机无浏览器 | Playwright ＋ Chrome for Testing（`executablePath` 指 `/tmp/chrome-1200/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`），`addInitScript` 注入 `localStorage.ecas_token`，量 `document.documentElement.scrollWidth - innerWidth` 与 `getBoundingClientRect().right > vw` 的元素清单 |
 | 线上「区间统计条」变成标签和值挤在一样的 9 行纯文本 | 重写 styles.css 为新版 strip（`.strip-head`/`.strip-sec`/`.tile`）时删掉了 `.strip .cell`/`.k`/`.v`，但当时**已提交**的 `SummaryStrip.tsx` 仍在用 `.cell` ⇒ 类名悬空、无网格无等宽数字 | 已用 `.strip:has(> .cell)` 限定「直接子元素是 .cell 时」补回旧网格（不影响新版 `.tile`）；**推广做法**：改 CSS 类名前先比对「源码 `className` ↔ CSS 已定义类」两份清单——本次脚本正好查出 `cell`/`v` 悬空（`alarm-table`/`recent-table` 只是钩子、无需定义）。另注意：CSS 与 JSX 若在不同提交里落地，部署出来的线上就是**两版错配**的样子 |
 
+### 8.10 MQTT 转发机（relay）与 8883 来源白名单
+
+> 2026-09-28 上线。安全审查 H-01：现场 DTU 只会明文 MQTT、无法启用 TLS ⇒ 把「接受明文」从**持有数据**的 broker 上摘出来，交给中转实例；中转实例不落任何数据。
+
+| 项 | 内容 |
+| --- | --- |
+| 链路 | 现场 DTU --明文 8883--> `ecas-mqtt-relay`（腾讯云 124.222.122.146，`persistence false`）--TLS 8884--> 主 broker（同机）--读--> `ecas-collector`（走 mesh `10.10.10.123:8884`） |
+| 主机 | 腾讯云 ssh 别名 `ecas`（root）；主机名 `VM-0-13-opencloudos`；`tun0 10.10.10.123/24` 即 mesh 地址（主 broker 与转发机同机） |
+| 仓库 | `web/deploy/cloud/mqtt-relay/{relay-mosquitto.conf,relay-acl.conf,ecas-mqtt-relay.service,ecas-relay-firewall.nft,ecas-relay-firewall.service}` ＋ 驱动 `web/deploy/cloud/deploy-cloud-mqtt-relay.sh` |
+| 云机文件 | `/etc/mosquitto/relay/{relay.conf,passwd,acl.conf}`（640）、`/etc/systemd/system/ecas-mqtt-relay.service`、`/etc/nftables/ecas-relay.nft`、`/etc/systemd/system/ecas-relay-firewall.service` |
+| 凭据 | 桥接账号 `ecas-bridge` 口令只在 `/Volumes/keys/ecas/mqtt.toml` ＋ macOS 钥匙串；下发经 env 传递，**本机不落盘、不进 argv、不打印**；服务器上只有 `relay.conf`（640 root:mosquitto）含明文（mosquitto 桥接的硬要求） |
+| 监听归属 | `8883` = relay（`0.0.0.0`，明文，现场 DTU）；`8884` = 主 broker（TLS，mesh/回环）；`1883` = 主 broker（仅 `127.0.0.1`） |
+| 白名单 | nftables 表 `inet ecas_relay`：`8883` 只放行 `127.0.0.1` + `180.108.106.0/24`（现场 DTU 运营商段），其余 `drop` ＋ 限速日志（6/分钟，前缀 `ecas-relay-drop`） |
+
+**用法**（Mac 上，`cd web/deploy/cloud`）：
+
+```bash
+./deploy-cloud-mqtt-relay.sh status             # 监听归属 + mosquitto/relay 两个服务状态
+./deploy-cloud-mqtt-relay.sh fw status          # 白名单：unit 状态 + 规则 + 被拒计数 + 最近被拒来源
+./deploy-cloud-mqtt-relay.sh fw stage|on|off    # 装（先 nft -c 校验）/ 启用 / 关闭（off 仅排障，关闭期间 8883 对所有来源开放）
+./deploy-cloud-mqtt-relay.sh fw allow 1.2.3.4   # 加白名单：改规则文件 elements + reload（运行期与文件始终一致）
+./deploy-cloud-mqtt-relay.sh fw deny 1.2.3.4    # 去白名单（拒绝移除 127.0.0.1，回环被挡会连累自检）
+./deploy-cloud-mqtt-relay.sh logs | verify | rollback
+```
+
+**为什么白名单是 /24 而不是单个 IP**：主 broker 近 3 天日志里 `dpro66-dtu` 的认证来源为 `180.108.106.44` / `.58` / `.59`（客户端 ID 恒为 `dpro66-01`）⇒ 该段是现场出口地址池，写死单 IP 会在 DTU 重新拨号后断流。
+
+**为什么用 nftables 而不是 iptables**：本机 `iptables` 是 **legacy** 后端（`iptables -S` 有 1017 行 Docker 规则），而 `nft list ruleset` 为 0 行 ⇒ nftables 命名空间干净、两者互不干扰；且 nft 的 `drop` 是**终局判决**，Docker 那些 `ACCEPT` 不会把包放过去。持久化用自带 unit（`systemctl is-enabled ecas-relay-firewall` = enabled），`Before=ecas-mqtt-relay.service` 保证规则先于监听就位。
+
+**验证证据（2026-09-28 14:29，白名单启用后）**：① 回环 `127.0.0.1:8883` 连接成功；② 云机自连自己公网 IP `124.222.122.146:8883` 超时；③ Mac（出口 `218.88.248.132`）连 `124.222.122.146:8883` 超时；④ `counter packets 17 bytes 1048 drop`，内核日志出现 `ecas-relay-drop … SRC=218.88.248.132 … DPT=8883`；⑤ 同期 `raw_reading` 计数与 `max(ts)` 继续前进（DTU 在白名单内，既有会话未断）。
+
+**安全网**：白名单若误伤 DTU，`ubuntu-super` 上的 `ecas-watchdog.sh` 的 `fresh` 判据（`STALE_MIN=10` 分钟，现场节拍 ~100s）会在 10 分钟内 `crit` 播报。
+
+**踩过的坑**：
+
+| 现象 | 根因 | 处置 / 教训 |
+| --- | --- | --- |
+| 桥接自检 `host name verification failed` ＋ `OpenSSL error:0A000086:certificate verify failed` | 服务器证书 SAN 只有 `IP:124.222.122.146, IP:127.0.0.1, DNS:VM-0-13-opencloudos`，`10.10.10.123` **不在**里面 | 桥接地址写**回环** `127.0.0.1:8884`（转发机与主 broker 同机，回环在 SAN 内）；要写 mesh 地址就得重签证书 |
+| relay 若开 `persistence true` | 与主 broker 共用 `/var/lib/mosquitto/mosquitto.db` | relay **必须** `persistence false`，否则覆盖主 broker 的会话库 |
+| `/etc/mosquitto/conf.d/*.conf` 里写的监听"没生效" | 主 `mosquitto.conf` 第 904 行 `include_dir` 是**注释** | 不要拿 `conf.d/` 当生效依据；一律以 `ss -ltnp` 实际监听为准（该目录已清空、旧文件改名 `*.disabled-<ts>`） |
+| 换手后 `docker compose up` 挂了新 conf 但行为没变 | 改**挂载的文件**不会自动 reload | 边缘同理：`docker compose restart edge` |
+| 白名单开了以后自己从 Mac 连 8883 连不上 | 本机出口 IP 不在白名单（**设计如此**） | 排障在云机上跑 `mosquitto_pub -h 127.0.0.1 -p 8883 …`，或临时 `fw off`（记得开回来） |
+| 改了 `elements` 只对运行期生效、重启就回退 | 规则来自文件，运行期改动不落盘 | `fw allow/deny` 会**同时**改文件并 reload，避免"临时对了、重启变了" |
+
+**残留风险（未消除）**：DTU→relay 这一段仍是**明文**（DTU 固件限制），白名单只是把来源收窄到运营商段；同段内的其他主机、以及运营商侧链路仍可看到明文内容。根治要在 DTU 侧支持 TLS 或换支持 TLS 的 DTU。
+
+**回滚**：`./deploy-cloud-mqtt-relay.sh rollback`（恢复主 broker 的 `8883` ＋ 停 relay）；白名单单独回滚 `fw off`。
+
 ---
 
 ## 9. 常用命令速查

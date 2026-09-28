@@ -17,6 +17,14 @@
 #           ./deploy-cloud-mqtt-relay.sh rollback   # 一键回滚（恢复主 broker 8883 + 停 relay）
 #           ./deploy-cloud-mqtt-relay.sh all        # stage + test + swap + verify
 #
+#   来源白名单（2026-09-28 先生令「可以设定白名单」）：
+#           ./deploy-cloud-mqtt-relay.sh fw stage      # 装 nft 规则文件 + unit（先 nft -c 校验，不生效）
+#           ./deploy-cloud-mqtt-relay.sh fw on         # 启用并立刻生效（8883 只放行白名单来源）
+#           ./deploy-cloud-mqtt-relay.sh fw off        # 关闭（8883 对所有来源开放 —— 仅排障用）
+#           ./deploy-cloud-mqtt-relay.sh fw status     # 看 unit 状态 + 规则 + drop 计数
+#           ./deploy-cloud-mqtt-relay.sh fw allow CIDR # 加白名单（改文件 + reload，运行期与文件一致）
+#           ./deploy-cloud-mqtt-relay.sh fw deny CIDR  # 去白名单（同上）
+#
 #   凭据：桥接账号 ecas-bridge 的口令只在 /Volumes/keys 加密卷（ecas/mqtt.toml）与
 #         macOS 钥匙串里；本脚本经 env 传入，绝不进 argv、绝不打印。
 #         服务器上只有 /etc/mosquitto/relay/relay.conf（640 root:mosquitto）持有明文，
@@ -32,6 +40,10 @@ MAIN_CONF=/etc/mosquitto/mosquitto.conf
 RELAY_DIR=/etc/mosquitto/relay
 UNIT=/etc/systemd/system/ecas-mqtt-relay.service
 TEST_TOPIC=${ECAS_RELAY_TEST_TOPIC:-dpro66-bridge-test}
+FW_NFT=/etc/nftables/ecas-relay.nft
+FW_UNIT=/etc/systemd/system/ecas-relay-firewall.service
+FW_SERVICE=ecas-relay-firewall.service
+FW_SET=allowed_v4
 VAULT_GET="$HOME/.files/dsh/bin/cred-keys-volume-sync.sh"
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
@@ -46,6 +58,8 @@ die() { echo "✗ $*" >&2; exit 1; }
 [ -f "$TPL" ] || die "找不到配置模板：$TPL"
 [ -f "$SRC/relay-acl.conf" ] || die "找不到 ACL：$SRC/relay-acl.conf"
 [ -f "$SRC/ecas-mqtt-relay.service" ] || die "找不到 unit：$SRC/ecas-mqtt-relay.service"
+[ -f "$SRC/ecas-relay-firewall.nft" ] || die "找不到白名单规则：$SRC/ecas-relay-firewall.nft"
+[ -f "$SRC/ecas-relay-firewall.service" ] || die "找不到白名单 unit：$SRC/ecas-relay-firewall.service"
 
 # 桥接口令（env 传递，不上 argv、不打印）
 bridge_pw() {
@@ -207,6 +221,89 @@ ss -ltnp | grep -E ':8883|:8884|:1883' | sed 's/users:.*//'
 EOS
 }
 
+# ── 来源白名单（8883 明文口收口：只放行现场 DTU 运营商段 + 回环）────────────────
+cmd_fw_stage() {
+    echo "── 安装 8883 来源白名单（nftables 规则 + systemd 单元，先校验不生效）──"
+    remote "install -d -m 755 /etc/nftables"
+    scp -q "${SSH_OPTS[@]}" "$SRC/ecas-relay-firewall.nft" "$HOST:$FW_NFT"
+    scp -q "${SSH_OPTS[@]}" "$SRC/ecas-relay-firewall.service" "$HOST:$FW_UNIT"
+    remote "chmod 644 $FW_NFT $FW_UNIT && systemctl daemon-reload && nft -c -f $FW_NFT && echo '✓ 规则校验通过（尚未生效）' && grep -n 'elements = ' $FW_NFT"
+}
+
+cmd_fw_on() {
+    echo "── 启用白名单：8883 只放行白名单来源，其余 drop（限速记日志）──"
+    remote "systemctl enable --now $FW_SERVICE >/dev/null 2>&1; systemctl is-enabled $FW_SERVICE; systemctl is-active $FW_SERVICE; nft list table inet ecas_relay"
+}
+
+cmd_fw_off() {
+    echo "── 关闭白名单（仅排障用：关闭期间 8883 对所有来源开放）──"
+    remote "systemctl disable --now $FW_SERVICE >/dev/null 2>&1 || true; nft delete table inet ecas_relay 2>/dev/null || true; echo '⚠️ 白名单已关闭'; nft list table inet ecas_relay 2>/dev/null || echo '（无 ecas_relay 表 = 确认关闭）'"
+}
+
+cmd_fw_status() {
+    remote "printf 'unit enabled: '; systemctl is-enabled $FW_SERVICE 2>/dev/null || echo no
+            printf 'unit active : '; systemctl is-active $FW_SERVICE 2>/dev/null || true
+            echo '--- 规则与计数（counter 的 packets 即被拒次数）---'
+            nft list table inet ecas_relay 2>/dev/null || echo '（无 ecas_relay 表 = 白名单未生效）'
+            echo '--- 最近被拒来源（限速日志）---'
+            journalctl -k --no-pager --since '24 hours ago' 2>/dev/null | grep -a 'ecas-relay-drop' | tail -5 || echo '（无）'"
+}
+
+# 改白名单：同时改规则文件的 elements 并 reload ⇒ 运行期与文件始终一致
+fw_edit() {
+    local action=$1 cidr=${2:-}
+    [ -n "$cidr" ] || die "用法：fw $action <CIDR，例如 180.108.106.0/24>"
+    case "$cidr" in
+        *[!0-9a-fA-F:./]*) die "CIDR 含非法字符：$cidr" ;;
+    esac
+    remote bash -s -- "$action" "$cidr" "$FW_NFT" "$FW_SERVICE" <<'EOS'
+set -euo pipefail
+action=$1; cidr=$2; f=$3; svc=$4
+python3 - "$action" "$cidr" "$f" <<'PY'
+import re, sys
+action, cidr, path = sys.argv[1:4]
+t = open(path, encoding="utf-8").read()
+m = re.search(r"elements = \{([^}]*)\}", t)
+if not m:
+    sys.exit("✗ 规则文件里找不到 elements = { … }")
+items = [x.strip() for x in m.group(1).split(",") if x.strip()]
+if action == "allow":
+    if cidr in items:
+        print(f"= {cidr} 已在白名单，无需改动"); sys.exit(0)
+    items.append(cidr)
+else:
+    if cidr not in items:
+        print(f"= {cidr} 不在白名单，无需改动"); sys.exit(0)
+    if cidr == "127.0.0.1":
+        sys.exit("✗ 拒绝移除 127.0.0.1（回环被挡会连累本机客户端与自检）")
+    items.remove(cidr)
+new = "        elements = { " + ", ".join(items) + " }"
+t = t[:m.start()] + new + t[m.end():]
+open(path, "w", encoding="utf-8").write(t)
+print(f"✓ 白名单已{'加入' if action == 'allow' else '移除'} {cidr} ⇒ {', '.join(items)}")
+PY
+nft -c -f "$f"
+if systemctl is-active --quiet "$svc"; then
+    systemctl reload "$svc"
+    echo "[fw] 已 reload ⇒ 运行期生效"
+else
+    echo "[fw] 单元未运行（尚未 fw on）⇒ 文件已改，下次 fw on 时生效"
+fi
+EOS
+}
+
+cmd_fw() {
+    case "${1:-status}" in
+        stage)  cmd_fw_stage ;;
+        on)     cmd_fw_on ;;
+        off)    cmd_fw_off ;;
+        status) cmd_fw_status ;;
+        allow)  fw_edit allow "${2:-}" ;;
+        deny)   fw_edit deny "${2:-}" ;;
+        *)      die "fw 子命令（可用：stage|on|off|status|allow CIDR|deny CIDR）" ;;
+    esac
+}
+
 case "${1:-}" in
     stage)    cmd_stage ;;
     test)     cmd_test ;;
@@ -215,6 +312,7 @@ case "${1:-}" in
     status)   cmd_status ;;
     logs)     shift; cmd_logs "$@" ;;
     rollback) cmd_rollback ;;
+    fw)       shift; cmd_fw "$@" ;;
     all)      cmd_stage; cmd_test; cmd_swap; cmd_verify ;;
-    *)        die "未知子命令（可用：stage|test|swap|verify|status|logs|rollback|all）" ;;
+    *)        die "未知子命令（可用：stage|test|swap|verify|status|logs|rollback|fw|all）" ;;
 esac

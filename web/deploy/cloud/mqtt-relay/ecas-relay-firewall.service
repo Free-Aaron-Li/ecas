@@ -1,0 +1,20 @@
+[Unit]
+Description=ECAS MQTT 转发机来源白名单（nftables：8883 仅放行现场 DTU 与回环）
+Documentation=file:/etc/nftables/ecas-relay.nft
+# 规则要在 relay 开始监听前就位，避免启动窗口内裸奔
+Before=ecas-mqtt-relay.service mosquitto.service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/nftables/ecas-relay.nft
+ExecReload=/usr/sbin/nft -f /etc/nftables/ecas-relay.nft
+ExecStop=/usr/sbin/nft delete table inet ecas_relay
+# 白名单是安全控制：停止本单元 = 8883 对所有来源开放，故不自动重启掩盖失败，
+# 由 systemd 记录失败状态 + 人工处理（误停也会在 `fw status` 里一眼看出）
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

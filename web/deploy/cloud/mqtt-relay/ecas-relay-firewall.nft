@@ -1,0 +1,47 @@
+#!/usr/sbin/nft -f
+# ============================================================================
+# ECAS MQTT 转发机来源白名单（nftables）—— 2026-09-28 先生令「可以设定白名单」
+#
+#   治理目标：转发机监听 8883（**明文**，现场 DTU 只能明文）暴露在公网。仅靠
+#   MQTT 口令挡不住扫描与口令爆破，故在主机侧按**来源 IP** 收口：
+#
+#       允许 127.0.0.1（本机客户端/自检） + 180.108.106.0/24（现场 DTU 的运营商段）
+#       其余来源对 8883 的 TCP 一律 drop（限速记日志，保留证据）
+#
+#   为什么要 /24 而不是单个 IP：主 broker 近 3 天日志里 dpro66-dtu 的认证来源为
+#   180.108.106.44 / .58 / .59（同一运营商段，客户端 ID 恒为 dpro66-01）⇒ 该段是
+#   现场出口地址池，写死单个 IP 会在 DTU 重新拨号后断流。
+#
+#   只收 8883：8884（TLS，采集器走 mesh）、1883（仅回环）不动。
+#
+#   为什么用 nftables 而不是 iptables：本机 iptables 是 **legacy** 后端（1017 行
+#   Docker 规则），而 `nft list ruleset` 为空 ⇒ nftables 命名空间干净，两者互不
+#   干扰；且 nft 的 drop 是终局判决，Docker 那些 ACCEPT 规则不会把包放过去。
+#
+#   改白名单：`deploy-cloud-mqtt-relay.sh fw allow <cidr>` / `fw deny <cidr>`
+#   （会同时改本文件的 elements 并 reload 使运行期与文件一致）。
+#
+#   安全网：白名单若误伤 DTU，本地看门狗 ecas-watchdog.sh 的 fresh 判据
+#   （STALE_MIN=10 分钟，现场节拍 ~100s）会在 10 分钟内播报 crit。
+# ============================================================================
+
+# 幂等重载：先声明再删除，避免 nft -f 重复追加规则（nft 经典写法）
+table inet ecas_relay
+delete table inet ecas_relay
+
+table inet ecas_relay {
+    set allowed_v4 {
+        type ipv4_addr
+        flags interval
+        elements = { 127.0.0.1, 180.108.106.0/24 }
+    }
+
+    chain input {
+        type filter hook input priority filter; policy accept;
+        # 白名单来源：放行（accept 在 nft 里只结束本链，不影响别的框架）
+        tcp dport 8883 ip saddr @allowed_v4 accept
+        # 其余来源：限速记日志（最多 6 条/分钟，防扫描刷屏）后丢弃
+        tcp dport 8883 limit rate 6/minute log prefix "ecas-relay-drop " level info
+        tcp dport 8883 counter drop
+    }
+}
