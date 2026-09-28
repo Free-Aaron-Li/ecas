@@ -12,12 +12,12 @@ import type { AlarmEvent, Alarms, AlarmsPage } from '../api'
 export function AlarmPanel({
   alarms,
   page,
-  hours,
+  windowLabel,
   onChanged,
 }: {
   alarms?: Alarms | null
   page: AlarmsPage | null
-  hours: number
+  windowLabel: string
   onChanged: () => void
 }) {
   const [low, setLow] = useState('')
@@ -180,7 +180,7 @@ export function AlarmPanel({
             {!(page?.items ?? []).length && (
               <tr className="empty">
                 <td colSpan={8} className="hint">
-                  近 {hours} 小时没有报警记录
+                  {windowLabel}没有报警记录
                 </td>
               </tr>
             )}

@@ -27,6 +27,9 @@ class Reading(BaseModel):
 
 class ReadingsPage(BaseModel):
     hours: int
+    #: 实际生效的时间窗（左闭右开）；预设区间是滑动窗口，自定义区间是绝对时刻
+    start: datetime | None = None
+    end: datetime | None = None
     limit: int
     offset: int
     count: int
@@ -37,6 +40,8 @@ class Summary(BaseModel):
     """区间统计：均值/极值只统计**有效区间**（4000~20500），断线行不参与。"""
 
     hours: int
+    start: datetime | None = None
+    end: datetime | None = None
     n: int
     n_valid: int
     broken: int
@@ -96,6 +101,8 @@ class AlarmEvent(BaseModel):
 
 class AlarmsPage(BaseModel):
     hours: int
+    start: datetime | None = None
+    end: datetime | None = None
     count: int
     active: int = Field(description="其中还在进行中的条数")
     items: list[AlarmEvent]

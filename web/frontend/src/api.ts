@@ -15,6 +15,9 @@ export interface Reading {
 
 export interface ReadingsPage {
   hours: number
+  /** 实际生效的时间窗（左闭右开，后端按自定义 start/end 或「最近 N 小时」算出来） */
+  start: string | null
+  end: string | null
   limit: number
   offset: number
   count: number
@@ -23,6 +26,8 @@ export interface ReadingsPage {
 
 export interface Summary {
   hours: number
+  start: string | null
+  end: string | null
   n: number
   n_valid: number
   broken: number
@@ -78,12 +83,45 @@ export interface AlarmEvent {
 
 export interface AlarmsPage {
   hours: number
+  start: string | null
+  end: string | null
   count: number
   /** 其中还在进行中的条数 */
   active: number
   items: AlarmEvent[]
   /** 后端最近一次扫描的结果（没扫过就是 null） */
   scan: Record<string, unknown> | null
+}
+
+/**
+ * 时间窗：要么给 `hours`（预设，终点=现在、随时间滑动），
+ * 要么给 `start`/`end`（自定义时段，绝对时刻，刷新后不漂）。
+ */
+export interface TimeWindow {
+  hours: number
+  /** 组件里给用户看的标签（不进请求） */
+  label?: string
+  start?: string
+  end?: string
+}
+
+/** 时间窗 → 查询串；自定义时段优先（后端四个接口都认这一套）。 */
+export function windowQuery(win: TimeWindow): string {
+  const p = new URLSearchParams()
+  if (win.start && win.end) {
+    p.set('start', win.start)
+    p.set('end', win.end)
+  } else {
+    p.set('hours', String(win.hours))
+  }
+  return p.toString()
+}
+
+/** 网关会话（Cloudflare Worker 注入的 cookie 会话；直连后端时没有这个接口）。 */
+export interface Session {
+  user: string
+  role: string
+  must_change: boolean
 }
 
 export interface Params {
@@ -165,16 +203,35 @@ async function getJSON<T>(path: string): Promise<T> {
 
 export const fetchAuthInfo = () => getJSON<AuthInfo>('/api/auth')
 
+/**
+ * 网关会话：能拿到说明站点挂在账户网关后面（真令牌由网关注入，浏览器只有占位符）。
+ * 直连后端（本机开发 5173 / 隧道）没有这个接口 ⇒ 返回 null，界面维持原来的令牌门逻辑。
+ */
+export async function fetchSession(): Promise<Session | null> {
+  const token = getToken()
+  const headers: Record<string, string> = { accept: 'application/json' }
+  if (token && asciiOnly(token)) headers.authorization = `Bearer ${token}`
+  try {
+    const resp = await fetch(withToken('/api/session', token), { headers })
+    if (!resp.ok) return null
+    const body = (await resp.json()) as Partial<Session>
+    if (!body || typeof body.user !== 'string') return null
+    return { user: body.user, role: body.role ?? '', must_change: !!body.must_change }
+  } catch {
+    return null
+  }
+}
+
 export const fetchParams = () => getJSON<Params>('/api/params')
 export const fetchHealth = () => getJSON<Health>('/api/health')
-export const fetchSummary = (hours: number) => getJSON<Summary>(`/api/summary?hours=${hours}`)
-export const fetchReadings = (hours: number, limit = 3000) =>
-  getJSON<ReadingsPage>(`/api/readings?hours=${hours}&limit=${limit}`)
+export const fetchSummary = (win: TimeWindow) => getJSON<Summary>(`/api/summary?${windowQuery(win)}`)
+export const fetchReadings = (win: TimeWindow, limit = 3000) =>
+  getJSON<ReadingsPage>(`/api/readings?${windowQuery(win)}&limit=${limit}`)
 
 // —— 报警事件与阈值（第 3 步）——
 
-export const fetchAlarms = (hours: number, limit = 50) =>
-  getJSON<AlarmsPage>(`/api/alarms?hours=${hours}&limit=${limit}`)
+export const fetchAlarms = (win: TimeWindow, limit = 50) =>
+  getJSON<AlarmsPage>(`/api/alarms?${windowQuery(win)}&limit=${limit}`)
 
 /** 自定义报警上下限：落库（后端 alarm_config），事件判定与图表阈值线一起生效。 */
 export async function saveAlarms(low: number, high: number): Promise<Alarms> {
@@ -216,9 +273,10 @@ async function postJSON<T>(path: string): Promise<T> {
 /**
  * 导出 CSV 的下载地址。走浏览器原生下载（`<a download>`），所以**只能**用查询串带令牌
  * ——`Authorization` 头给不了 `<a>`；非 ASCII 令牌由 `withToken()` 自动改走 `?token=`。
+ * 时间窗与看板完全一致：看的是哪一段，导出的就是哪一段。
  */
-export function exportCsvUrl(hours: number): string {
-  return withToken(`/api/export.csv?hours=${hours}`, getToken())
+export function exportCsvUrl(win: TimeWindow): string {
+  return withToken(`/api/export.csv?${windowQuery(win)}`, getToken())
 }
 
 /** 判断某个浓度是否越限（用后端给的报警上下限）。 */
@@ -258,6 +316,26 @@ export function fmtTime(ts: string): string {
 export function fmtDateTime(ts: string): string {
   const d = new Date(ts)
   return `${d.getMonth() + 1}/${d.getDate()} ${fmtTime(ts)}`
+}
+
+/** 完整日期时间（自定义时段要写清年月日，跨月跨年都不能含糊）。 */
+export function fmtFull(ts: string): string {
+  const d = new Date(ts)
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${fmtTime(ts)}`
+}
+
+/** ISO → `<input type="datetime-local">` 用的本地时间串（`YYYY-MM-DDTHH:mm`）。 */
+export function toLocalInput(iso: string | null | undefined): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+/** `<input type="datetime-local">` 的值 → 带时区的 ISO（后端只认 ISO，且要能对得上绝对时刻）。 */
+export function fromLocalInput(value: string): string {
+  const d = new Date(value)
+  return Number.isNaN(d.getTime()) ? '' : d.toISOString()
 }
 
 export function fmtNum(v: number | null | undefined, digits = 3): string {

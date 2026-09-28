@@ -136,7 +136,7 @@ SQL_EVENTS = """
 SELECT id, model, kind, level, started_ts, ended_ts, peak_raw, peak_ts, n_rows, note
   FROM alarm_event
  WHERE model = %(model)s
-   AND (ended_ts IS NULL OR started_ts >= now() - make_interval(hours => %(hours)s))
+   AND (ended_ts IS NULL OR (started_ts >= %(start)s AND started_ts < %(end)s))
  ORDER BY started_ts DESC
  LIMIT %(limit)s
 """
@@ -182,8 +182,24 @@ def reset_alarms(pool: ConnectionPool, settings: Any) -> dict[str, Any]:
     return effective_alarms(pool, settings)
 
 
-def events(pool: ConnectionPool, settings: Any, hours: int = 24, limit: int = 200) -> list[dict[str, Any]]:
-    rows = db.fetch_all(pool, SQL_EVENTS, {"model": settings.model_name, "hours": hours, "limit": limit})
+def events(
+    pool: ConnectionPool,
+    settings: Any,
+    hours: int = 24,
+    limit: int = 200,
+    start: datetime | None = None,
+    end: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """区间内的事件台账（进行中的那条**永远列出** —— 它可能是区间开始前就断的）。
+
+    给了 `start`/`end` 就用绝对窗口（看板自定义时段），否则按「最近 hours 小时」滑动。
+    """
+    if start is None or end is None:
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(hours=max(1, int(hours)))
+    rows = db.fetch_all(
+        pool, SQL_EVENTS, {"model": settings.model_name, "start": start, "end": end, "limit": limit}
+    )
     out = []
     for row in rows:
         started, ended = row["started_ts"], row.get("ended_ts")

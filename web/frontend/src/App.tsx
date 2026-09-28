@@ -3,18 +3,31 @@ import {
   AuthError,
   concFormula,
   exportCsvUrl,
+  fmtAge,
+  fmtFull,
+  fmtNum,
+  fromLocalInput,
   fetchAlarms,
   fetchAuthInfo,
   fetchHealth,
   fetchParams,
   fetchReadings,
+  fetchSession,
   fetchSummary,
-  fmtAge,
-  fmtNum,
   getToken,
   setToken as saveToken,
+  toLocalInput,
 } from './api'
-import type { AlarmsPage, Health, Params, Reading, ReadingsPage, Summary } from './api'
+import type {
+  AlarmsPage,
+  Health,
+  Params,
+  Reading,
+  ReadingsPage,
+  Session,
+  Summary,
+  TimeWindow,
+} from './api'
 import { AlarmPanel } from './components/AlarmPanel'
 import { KpiCards } from './components/KpiCards'
 import { RecentTable } from './components/RecentTable'
@@ -24,19 +37,34 @@ import { TokenGate } from './components/TokenGate'
 import { TrendChart } from './components/TrendChart'
 import { useLiveReading } from './hooks/useLiveReading'
 
-const RANGES = [
+/** 预设区间：只给 hours ⇒ 终点＝现在，窗口随时间滑动。 */
+const PRESETS: TimeWindow[] = [
   { hours: 1, label: '1 小时' },
   { hours: 24, label: '24 小时' },
   { hours: 168, label: '7 天' },
   { hours: 720, label: '30 天' },
 ]
+const DEFAULT_WIN = PRESETS[1]
+
+/** 自定义时段上限：与后端 `MAX_WINDOW_HOURS` 一致（超了后端报 400，前端先说清楚）。 */
+const MAX_CUSTOM_HOURS = 720
 
 const TABLE_ROWS = 25
 const POLL_MS = 30_000
 
+function hoursAgoIso(hours: number): string {
+  return new Date(Date.now() - hours * 3_600_000).toISOString()
+}
+
+/** 看板上写的时段说明（导出按钮的 title、统计条的「区间」都用它）。 */
+function windowText(win: TimeWindow): string {
+  if (win.start && win.end) return `${fmtFull(win.start)} → ${fmtFull(win.end)}（${win.hours} 小时）`
+  return `最近 ${win.hours} 小时（滑动窗口）`
+}
+
 export default function App() {
   const [params, setParams] = useState<Params | null>(null)
-  const [hours, setHours] = useState(24)
+  const [win, setWin] = useState<TimeWindow>(DEFAULT_WIN)
   const [page, setPage] = useState<ReadingsPage | null>(null)
   const [summary, setSummary] = useState<Summary | null>(null)
   const [health, setHealth] = useState<Health | null>(null)
@@ -47,17 +75,23 @@ export default function App() {
   const [authRequired, setAuthRequired] = useState(false)
   const [needToken, setNeedToken] = useState(false)
   const [tokenError, setTokenError] = useState<string | null>(null)
+  const [session, setSession] = useState<Session | null>(null)
   const [showAlarms, setShowAlarms] = useState(true)
+  // 自定义时段输入框（本地时间串，按「应用」才生效）
+  const [rangeOpen, setRangeOpen] = useState(false)
+  const [rangeStart, setRangeStart] = useState(() => toLocalInput(hoursAgoIso(6)))
+  const [rangeEnd, setRangeEnd] = useState(() => toLocalInput(new Date().toISOString()))
+  const [rangeError, setRangeError] = useState<string | null>(null)
   const { live, connected } = useLiveReading(token)
 
   // 容器职责：取数与状态，展示交给子组件（presentational）
-  const load = useCallback(async (h: number) => {
+  const load = useCallback(async (w: TimeWindow) => {
     try {
       const [readings, sum, hh, alarms] = await Promise.all([
-        fetchReadings(h),
-        fetchSummary(h),
+        fetchReadings(w),
+        fetchSummary(w),
         fetchHealth(),
-        fetchAlarms(h),
+        fetchAlarms(w),
       ])
       setPage(readings)
       setSummary(sum)
@@ -99,6 +133,13 @@ export default function App() {
       .catch(() => undefined)
   }, [])
 
+  // 网关会话（部署形态下令牌由网关注入，浏览器只有占位符 ⇒ 界面上不该出现「清除令牌」）
+  useEffect(() => {
+    fetchSession()
+      .then(setSession)
+      .catch(() => undefined)
+  }, [])
+
   useEffect(() => {
     if (needToken) return
     fetchParams()
@@ -109,14 +150,14 @@ export default function App() {
   useEffect(() => {
     if (needToken) return
     setLoading(true)
-    void load(hours)
-  }, [hours, load, needToken])
+    void load(win)
+  }, [win, load, needToken])
 
   useEffect(() => {
     if (needToken) return
-    const timer = window.setInterval(() => void load(hours), POLL_MS)
+    const timer = window.setInterval(() => void load(win), POLL_MS)
     return () => window.clearInterval(timer)
-  }, [hours, load, needToken])
+  }, [win, load, needToken])
 
   const rows = useMemo<Reading[]>(() => {
     const base = page?.items ?? []
@@ -128,13 +169,43 @@ export default function App() {
   const chartItems = useMemo(() => [...rows].reverse(), [rows])
   const stale = health?.stale ?? false
 
+  // 区间内的浓度变化（首→末，只算有效测量点；断线是故障标记不是测量值）
+  const change = useMemo(() => {
+    const pts = chartItems.filter((r) => r.status !== '断线')
+    if (pts.length < 2) return null
+    const from = pts[0].conc
+    const to = pts[pts.length - 1].conc
+    return { from, to, delta: to - from }
+  }, [chartItems])
+
   // 报警面板改了阈值 → 阈值线、越限统计、事件表都得跟着重拉
   const refreshAfterAlarmChange = useCallback(() => {
     void fetchParams()
       .then(setParams)
       .catch(() => undefined)
-    void load(hours)
-  }, [hours, load])
+    void load(win)
+  }, [win, load])
+
+  const applyRange = () => {
+    const start = fromLocalInput(rangeStart)
+    const end = fromLocalInput(rangeEnd)
+    if (!start || !end) {
+      setRangeError('起止时间都得填')
+      return
+    }
+    const spanH = (Date.parse(end) - Date.parse(start)) / 3_600_000
+    if (spanH <= 0) {
+      setRangeError('起点必须早于终点')
+      return
+    }
+    if (spanH > MAX_CUSTOM_HOURS) {
+      setRangeError(`最长 ${MAX_CUSTOM_HOURS / 24} 天（当前 ${(spanH / 24).toFixed(1)} 天）`)
+      return
+    }
+    setRangeError(null)
+    setWin({ hours: Math.max(1, Math.round(spanH)), start, end })
+    setRangeOpen(false)
+  }
 
   const enterToken = (value: string) => {
     saveToken(value)
@@ -142,7 +213,7 @@ export default function App() {
     setTokenError(null)
     setNeedToken(false)
     setLoading(true)
-    void load(hours)
+    void load(win)
   }
 
   const forgetToken = () => {
@@ -170,10 +241,31 @@ export default function App() {
           <InfoPill tone="warn" text={`进行中报警 ${alarmsPage.active}`} />
         )}
         <InfoPill tone={connected ? 'ok' : 'dim'} text={connected ? '实时推送已连接' : '实时推送未连接'} />
-        {authRequired && token && (
-          <button type="button" className="header-btn" onClick={forgetToken}>
-            清除令牌
-          </button>
+        {session ? (
+          // 账户网关形态：令牌由网关注入，浏览器只有占位符 ⇒ 这里只给「退出登录」
+          <>
+            {session.role === 'admin' && (
+              <a className="header-btn link" href="/admin">
+                账户管理
+              </a>
+            )}
+            <span className="header-user" title={`登录账户 ${session.user}（${session.role || 'viewer'}）`}>
+              {session.user}
+            </span>
+            <form className="logout-form" method="post" action="/logout">
+              <button type="submit" className="header-btn">
+                退出登录
+              </button>
+            </form>
+          </>
+        ) : (
+          // 直连后端形态（本机 5173 / 隧道）：令牌在 localStorage，保留手工清除
+          authRequired &&
+          token && (
+            <button type="button" className="header-btn" onClick={forgetToken}>
+              清除令牌
+            </button>
+          )
         )}
         {health ? (
           <InfoPill
@@ -213,7 +305,13 @@ export default function App() {
 
       <KpiCards last={last} params={params} alarms={params?.alarms} />
 
-      <SummaryStrip summary={summary} health={health} alarms={params?.alarms} />
+      <SummaryStrip
+        summary={summary}
+        health={health}
+        alarms={params?.alarms}
+        windowLabel={win.start && win.end ? `${fmtFull(win.start)} → ${fmtFull(win.end)}` : `${win.hours} 小时`}
+        change={change}
+      />
 
       <section className="card">
         <div className="chart-head">
@@ -230,26 +328,90 @@ export default function App() {
             >
               报警线 {showAlarms ? '开' : '关'}
             </button>
-            <a className="header-btn link" href={exportCsvUrl(hours)} download>
-              导出 CSV（{hours} 小时）
+            <a
+              className="header-btn link"
+              href={exportCsvUrl(win)}
+              download
+              title={`导出 ${windowText(win)} 的原始值 + 换算结果（CSV）`}
+            >
+              导出 CSV（{win.start ? '自定义时段' : win.label}）
             </a>
             <div className="tabs" role="group" aria-label="时间区间">
-              {RANGES.map((r) => (
+              {PRESETS.map((r) => (
                 <button
                   key={r.hours}
                   type="button"
-                  aria-pressed={hours === r.hours}
-                  onClick={() => setHours(r.hours)}
+                  aria-pressed={!win.start && win.hours === r.hours}
+                  onClick={() => setWin(r)}
                 >
                   {r.label}
                 </button>
               ))}
+              <button
+                type="button"
+                aria-pressed={!!win.start}
+                onClick={() => setRangeOpen((v) => !v)}
+                title="自定义起止时间点"
+              >
+                自定义
+              </button>
             </div>
           </div>
         </div>
+
+        <div className="range-bar">
+          <span className="range-now">当前区间：{windowText(win)}</span>
+          {win.start && (
+            <button type="button" className="range-clear" onClick={() => setWin(DEFAULT_WIN)}>
+              回到最近 {DEFAULT_WIN.label}
+            </button>
+          )}
+        </div>
+
+        {rangeOpen && (
+          <div className="range-panel">
+            <label>
+              起点
+              <input
+                type="datetime-local"
+                value={rangeStart}
+                onChange={(e) => setRangeStart(e.target.value)}
+              />
+            </label>
+            <label>
+              终点
+              <input type="datetime-local" value={rangeEnd} onChange={(e) => setRangeEnd(e.target.value)} />
+            </label>
+            <div className="range-quick">
+              {[1, 6, 24, 168].map((h) => (
+                <button
+                  key={h}
+                  type="button"
+                  onClick={() => {
+                    setRangeEnd(toLocalInput(new Date().toISOString()))
+                    setRangeStart(toLocalInput(hoursAgoIso(h)))
+                    setRangeError(null)
+                  }}
+                >
+                  近 {h < 24 ? `${h} 小时` : `${h / 24} 天`}
+                </button>
+              ))}
+            </div>
+            <div className="range-actions">
+              <button type="button" className="header-btn primary" onClick={applyRange}>
+                应用
+              </button>
+              <button type="button" className="header-btn" onClick={() => setRangeOpen(false)}>
+                取消
+              </button>
+            </div>
+            {rangeError && <span className="range-err">{rangeError}</span>}
+          </div>
+        )}
+
         <TrendChart
           items={chartItems}
-          hours={hours}
+          hours={win.hours}
           average={summary?.conc_avg ?? null}
           loading={loading}
           alarms={params?.alarms}
@@ -257,7 +419,12 @@ export default function App() {
         />
       </section>
 
-      <AlarmPanel alarms={params?.alarms} page={alarmsPage} hours={hours} onChanged={refreshAfterAlarmChange} />
+      <AlarmPanel
+        alarms={params?.alarms}
+        page={alarmsPage}
+        windowLabel={win.start ? '该自定义时段' : `近 ${win.hours} 小时`}
+        onChanged={refreshAfterAlarmChange}
+      />
 
       <section className="card">
         <div className="chart-head">
