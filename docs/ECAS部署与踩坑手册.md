@@ -1196,6 +1196,40 @@ python3 tighten-security-group.py apply --confirm     # 落地（先自动备份
 
 ---
 
+### 8.11 腾讯云安全组规则清单与复核（2026-09-28）
+
+> 权威来源：先生导出的 `firewallRules_2026-09-28 14_48_16.csv`（27 条，列 `CidrBlock,Protocol,Port,Action,FirewallRuleDescription`）。
+> **该安全组是「未放行即拒绝」**：实测公网连 `8883`/`8884`/`8888`/`1883` 全超时，`22`/`80`/`443`/`11010`/`12121` 可连。
+
+| 端口 | 协议 | 来源 | 备注 | 结论 |
+| --- | --- | --- | --- | --- |
+| 22 | TCP | 全部 IPv4 | — | 保留（sshd 禁口令、root 仅证书） |
+| 80 | TCP | 全部 IPv4 | — | 保留（ACME + `301 https://gateway.xshky.org`） |
+| 443 | TCP | 全部 IPv4 | — | 保留（自签阶段）；证书就绪后换正式证书，HSTS 由 Worker 下发 |
+| 8883 | TCP | `180.108.106.0/24` | `DTU STL` | ✅ 已收窄到 DTU 运营商段；与主机 `nftables` 白名单**双层**（先安全组、后 nft） |
+| 1883 | TCP | IPv4 允许规则已删 | `MQTT` | ✅ 只监听 `127.0.0.1`，此口本无需公网放行 |
+| 8888 | TCP | 全部 IPv4 **拒绝** | 宝塔 | ✅ 维持拒绝 |
+| 11010 | TCP+UDP | 全部 IPv4 允许 | — | 按先生裁定保留（EasyTier 核心口） |
+| 11011 | TCP+UDP | 全部 IPv4 允许 | — | ⚠️ 当前**无 TCP 监听**（UDP 有） |
+| 11012 | TCP+UDP | 全部 IPv4 允许 | — | ⚠️ **完全无监听** ⇒ 冗余暴露面，建议删 |
+| 21212 | TCP+UDP | 全部 IPv4 允许 | — | UDP 必须保留（设备取配置）；**TCP 无监听**，可删 TCP 行 |
+| 12121 | TCP+UDP | 全部 IPv4 允许 | — | ⚠️ EasyTier 控制面公网可达（见下） |
+| ICMP | ALL | 全部 IPv4 拒绝 | — | `ping` 不通**不代表端口被挡**：用 TCP 探针区分 |
+
+**12121 复核（同机另一项目，仅记录建议、未动）**
+
+- 容器 `easytier-web` 启动参数 `-a 12121 -l 12121 -c 21212`（`-a` = REST API、`-c` = 设备 config server），`--api-server-addr` 未指定 ⇒ 默认 `0.0.0.0`。
+- 公网 `GET http://124.222.122.146:12121/` ⇒ 200，`EasyTier Dashboard`；前端含 `/api/v1/auth/login`、`/auth/register`、`/auth/captcha`、`/machines`、`/networks`。
+- 只读探针：`/api/v1/auth/check_login_status` 401、`/api/v1/summary` 401（**数据接口有会话校验**）；`/api/v1/auth/oidc/config` → `{"enabled":false}`；`/api/v1/auth/captcha` → 200。
+- `easytier-web --help` 有 `--disable-registration` 开关，容器**未传** ⇒ **注册入口默认开放**（有验证码，但不是准入控制）。
+- 建议：(a) 安全组删 12121，改 `ssh -L 12121:127.0.0.1:12121 ecas` 隧道（比照 8888 宝塔）；或 (b) 加 `--disable-registration` + 强口令。
+
+**排障要诀（分层判定）**：想确认「包是哪一层丢的」，先看主机侧——`fw allow <你的出口 IP>/32` 之后**仍连不上**，就说明挡在**安全组**（主机已放行）；验证完记得 `fw deny <IP>/32` 还原。本机出口 IP 用 `ssh ecas 'echo $SSH_CLIENT'` 查。
+
+**安全组怎么改**：控制台由先生操作，或用 `web/deploy/cloud/tighten-security-group.py`（`show|plan|apply --confirm`，密钥只从 `TENCENTCLOUD_SECRET_ID/KEY` 环境变量读，`apply` 自动备份 `tighten-sg-backup-<stamp>.json`）。
+
+---
+
 ## 9. 常用命令速查
 
 > [!example]- 展开：全部命令
