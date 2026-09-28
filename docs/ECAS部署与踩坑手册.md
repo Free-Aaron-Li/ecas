@@ -703,6 +703,171 @@ tls_version tlsv1.2
 > ⇒ **53 分钟无数据**。另有三次境外匿名连接（`5.252.83.218` / `69.5.169.10` / `65.49.1.52`）发生在加固前
 > ——裸奔的 1883 确实被扫到过。**改口令的顺序永远是：先服务器、后 DTU。**
 
+### 5.7 Ubuntu Super Server 测试栈（2026-09-26 上线，A 方案 Docker Compose）
+
+第二套运行环境：把「采集 → 后端 → 看板」搬到 **10.10.10.11（ubuntu-super，easytier mesh 内的生产机）** 上跑，
+三个容器 + systemd 自启，**只绑 mesh 地址**，公网/办公网都到不了。
+
+| 位置 | 内容 |
+| --- | --- |
+| 仓库 | `web/deploy/ubuntu/`（`deploy.sh` 子命令 `stage\|push\|creds\|build\|up\|check\|logs\|all`） |
+| 目标机 | `/opt/ecas/`（`docker-compose.yml`、`.env`、`backend/`、`collector/`、`sql/`、`secrets/`、`frontend-dist/`、`systemd/`） |
+| 凭据 | `/opt/ecas/credentials/{pg-password,auth-token,mqtt-pass}`（目录 700、文件 600 root）→ compose secret → 容器 `/run/secrets/*`；**目标机 systemd 249 没有 `systemd-creds`**，此机破例用 600 明文（先生同意，记在密钥卷 README + 审计 #284） |
+| 数据 | `/data/ecas/pgdata`（44T 数据盘，不是系统盘） |
+| 单元 | `ecas-stack.service`（`Type=oneshot` + `docker compose up -d`，已 `enable` + `active`） |
+| 看板 | `http://10.10.10.11:18080`（**只能从 mesh 内访问**；`/healthz` 公开，`/api/*` 要 Bearer 令牌） |
+
+关键取值：`OFFSET_CONC=0.48`、`MODEL_NAME=DPRO-66`、只读账号 `ecas-monitor`、`MQTT_TOPIC=dpro66`。
+宿主端口 **18080**：这台机上 `0.0.0.0:8080` 已被生产容器 `side.base.apigateway` 占用（实测 bind 冲突）。
+
+#### 5.7.1 数据通路：走腾讯云，**不走测试机自己的外网出口**
+
+先生 2026-09-26 明确：「**不走 218.88.248.132（测试机本地出口），走腾讯云服务器出外网**」。而 8884 安全组**未放行**
+（云端配置自己写着「未放行安全组 ⇒ 公网不可达，仅作就绪备用」）⇒ 采集器**走 easytier mesh 连云端的 mesh 地址**：
+`MQTT_HOST=10.10.10.123`、`MQTT_PORT=8884`（目标机 `ip route get 10.10.10.123` = `dev tun0`，即经隧道到腾讯云）。因此：
+- **不需要**在安全组放行 8884，也不需要把测试机的外网 IP 加白名单；
+- MQTT 流量全程走 mesh（easytier overlay）+ TLS。
+
+2026-09-26 追问确认（先生选）：**只有数据通路走云**；测试机的 apt / pip / docker 拉镜像**维持直连**国内镜像源
+（不为这台生产机改默认路由、也不在云端加代理服务）。
+
+> [!important] SAN 里没有 mesh 地址 ⇒ 用「链校验 + 指纹钉扎」替代主机名校验
+> `server.crt` 的 SAN = `IP:124.222.122.146, IP:127.0.0.1, DNS:VM-0-13-opencloudos`，**没有 `10.10.10.123`**。
+> 所以 `web/deploy/ubuntu/collector/mqtt_tls_feeder.py` 在给了 `--cert-sha256` 时：`CERT_REQUIRED` 保留 CA 链校验，
+> **关掉 hostname 检查**，改用 `MQTT_CERT_SHA256` 比对对端 leaf 证书的 SHA-256；取不到或不符 ⇒ `CertPinError`，**拒绝订阅**（fail closed）。
+>
+> 当前指纹（2026-09-26 签发，有效期至 2036-09-23，序列号 `40DE409E…FE2B2`）：
+> `B6:4B:8D:3A:37:E4:39:AA:61:0B:BD:02:D1:9C:66:0D:EB:4C:11:CD:C8:77:DE:93:1C:AE:0E:72:5D:84:6D:41`
+> 取法：`ssh ecas 'openssl x509 -in /etc/mosquitto/certs/server.crt -noout -fingerprint -sha256'`。
+> 云端**若重签 `server.crt`（例如给 SAN 加 mesh 地址），必须同步更新 `MQTT_CERT_SHA256`**，否则采集器会一直拒绝订阅。
+> 另一条未采用的路：给 SAN 加 `IP:10.10.10.123` 再 `systemctl restart mosquitto` —— 会让现场 DTU 断一次线；
+> `ca.key` 在云上（`/etc/mosquitto/certs/ca.key`），想换回标准校验是 5 分钟的事。
+
+#### 5.7.2 上线时踩的三个坑
+
+| 现象 | 根因 | 处置 |
+| --- | --- | --- |
+| `dependency failed to start: container ecas-db is unhealthy`；db 日志 `psql: error: /docker-entrypoint-initdb.d/001_init.sql: Permission denied` | 仓库里 `scripts/485/sql/001_init.sql` 是 **600**，`rsync -a` 保模式 ⇒ 容器内 uid 70 读不了 | `deploy.sh` stage 末尾统一 `chmod -R u=rwX,go=rX`；补救：目标机 `chmod 644` 后手工 `psql -f -` 跑 001 |
+| `Bind for 0.0.0.0:8080 failed: port is already allocated` | 这台机是**生产机**（32 个容器），`side.base.apigateway` 占着 8080 | 改用 **18080**；compose 写成 `${BIND_IP:?…}:${ECAS_WEB_PORT:-18080}:8000` 硬失败，防漏配退化成 0.0.0.0 |
+| 采集器日志反复 `TimeoutError`（连 `124.222.122.146:8884`） | 8884 未放行安全组（公网不可达） | 改走 mesh `10.10.10.123:8884`（见 §5.7.1） |
+
+#### 5.7.3 自检（`./web/deploy/ubuntu/deploy.sh check`）
+
+六步：① `docker compose ps` 三容器 Up ② `ss -lnt` 只见 `10.10.10.11:18080`（绝无 `0.0.0.0:18080`）
+③ 无令牌 `/healthz` = 200（该端点本就公开）④ 无令牌 `/api/readings` = **401**、带令牌 = 200
+⑤ 库里行数 + 换算抽查 ⑥ 采集器日志（应见 `证书指纹 ✓ …` 与 `已连上 10.10.10.123:8884`）。
+2026-09-26 首轮全绿：`20:27:53 / 20:29:33 / 20:31:13 / 20:32:53` 四条真实数据已入库（约 100 秒一条），
+`raw=12500 → 浓度 53.61`（+0.48 加性补偿），告警表 `alarm_config`/`alarm_event` 由后端启动时自建。
+
+> [!warning] 排查别把「测试机自己发起的探测」当异常流量
+> 早期我用 `timeout 30 docker compose run … -e MQTT_PORT=8883 collector` 探端口：`timeout` 只杀了 CLI，**容器活着**，
+> 于是它以 5 秒一次往云端 8883（明文口）打 TLS，日志里刷
+> `New connection from 218.88.248.132 … disconnected due to protocol error`（共 80 条）。
+> 处置：`docker ps -a | grep collector-run` → `docker rm -f ecas-collector-run-<id>`。
+
+---
+
+### 5.8 公网发布：云端 nginx 反代（2026-09-26 上线）
+
+对外入口：**`https://124.222.122.146/`**（云端公网 IPv4）→ 反代 `http://10.10.10.11:18080`
+（Ubuntu 测试栈，**全程走 mesh 隧道，公网不暴露 18080**）。
+
+- **完整链路的第四跳**（先生 2026-09-26 口述）：`DTU → 腾讯云 MQTT → Ubuntu 入库与前后端 → 腾讯云发布网页至外网`。
+  因此公网唯一入口是云端这一层；**ADR 5 的适用范围随之收窄为「Ubuntu 看板不直接暴露」**（云端这道门是先生要的）。
+- **资产**：`web/deploy/cloud/`（`docker-compose.yml` + `nginx/ecas-edge.conf` + `deploy-cloud-edge.sh`），
+  部署到云端 `/opt/ecas-edge/`；容器 `ecas-edge`（`nginx:1.27-alpine`，**`network_mode: host`** ⇒ 直绑宿主 `80/443`、
+  日志里是真实客户端 IP）；`restart: unless-stopped` + `docker compose` 健康检查。
+  **为什么用容器**：云端是 **OpenCloudOS 9.4**（RHEL 系、只有 `dnf`、**没有 apt**，且仓库里**没有 nginx 包**，见 §8.5）。
+- **一键**：`./web/deploy/cloud/deploy-cloud-edge.sh all`（`stage → cert → up → verify`，另有 `logs` / `down`）。
+  自检六项全绿（云端本机发起，不依赖安全组）：容器 healthy、`0.0.0.0:80`+`0.0.0.0:443` 在听、
+  `https://127.0.0.1/healthz`=**200**、`https://127.0.0.1/api/readings`=**401**（无令牌被拦）、
+  `http://127.0.0.1/healthz`=**301**（跳 https）、反代上游经 mesh=**200**。
+- **前置（只有先生能做）**：腾讯云安全组放行 **80 + 443**（80 只做 301 跳转）。
+  云端主机 `firewalld` 未运行 ⇒ 无需额外放行；公网侧 80/443 在放行前实测为 `Timeout`（放行后应为 200）。
+- **TLS 用自签**：没有域名就签不了 Let's Encrypt 的可信证书。
+  `/opt/ecas-edge/ssl/ecas-selfsigned.{crt,key}`（397 天、`SAN=IP:124.222.122.146,IP:10.10.10.123,DNS:ecas.local`、
+  指纹 `DE:13:1B:59:…:AF`）；浏览器首次访问点一次「继续访问」。
+  **自签阶段故意不开 HSTS**（否则浏览器被钉在告警页）；将来有域名 → 换成 Let's Encrypt 只改配置里两行路径 + 打开 HSTS 行。
+- **令牌不落日志**：反代 `log_format` 只用 `$uri`（**不含查询串**）——令牌可能经 `?token=` 传（前端 WebSocket、下载），
+  日志在 `/opt/ecas-edge/logs/ecas-access.log`。`/ws/readings` 已转发 `Upgrade`/`Connection`（实时曲线必需）。
+- **停用**：`./web/deploy/cloud/deploy-cloud-edge.sh down`（公网立刻恢复不可达，Ubuntu 侧不受影响）。
+- **公网侧实测（2026-09-26 安全组放行后，从测试机真实外网发起）**：`80`/`443` 可达；
+  `https /healthz`=200、`https /api/readings`=401（无令牌）、`http /healthz`=301、`https /api/auth`=200、
+  `https /` 返回真看板（`<title>ECAS · 浓度计实时…`）、`/ws/readings` 带错令牌=**403**（证明 WS 已到后端并被鉴权拒绝）；
+  带真令牌 `/api/readings`=**200** 且拿到**实时新数据**（`20:49:34`，比上线首轮的 `20:32:53` 更新 ⇒ DTU 恢复上报、链路全通）。
+  边缘访问日志：客户端 IP 为真实公网出口 `218.88.248.132`，`grep -c 'token='` = **0**（令牌不落日志）。
+
+### 5.9 架构切换：云端退居中转，数据库归本地（2026-09-26）
+
+先生指令（原话）：「数据库内数据应该使用腾讯云中数据补全，并且腾讯云服务器仅作为中转站，无论是 easytier，
+还是 mqtt，不再需要数据库，数据库全程由本地服务器跑。」⇒ 正式形态：
+
+```
+塔石 DTU ──明文 :8883──▶ 云 mosquitto（唯一职责：中继）
+                              │  mesh 隧道（TLS :8884，链校验 + 指纹钉扎）
+                              ▼
+                    Ubuntu Super Server：采集器 → 本地 PostgreSQL（唯一权威副本）
+                                                  └─ 后端 + 看板（只绑 mesh）
+                                                          ▲
+                                          云端 nginx 边缘（:80/:443 反代，只转发）
+```
+
+- **云端历史数据补全（783 条，逐字节一致）**：云端 `raw_reading` 全量灌入本地库，
+  两端对账 `783 行 ｜ md5 = 1a97914b1cee7906901561e13d9703f4` 完全相同；
+  按日 `2026-09-25 → 55 条`、`2026-09-26 → 728 条`；两端 `max(ts)` 均 `2026-09-26 20:56:14+08`。
+  告警两表（`alarm_config` / `alarm_event`）云端都是 **0 行**，没有告警数据需要迁（本地告警表由后端自建）。
+- **终态快照留档**：云端 `/root/ecas/archive/db/ecas-final-20260926-205724.dump`（19K，sha256 `9d3b1b7b…`）
+  与同名 `.sql`（34K，sha256 `1ad37a2c…`）；Mac 另留一份 `~/ecas-backups/ecas-final-20260926-205724.dump`。
+- **云端退库（按单元逐个停）**：`ecas-monitor`、`ecas-web` 停用；`ecas-healthcheck.timer`、`ecas-pgdump.timer` 停用；
+  `postgresql.service` disable + stop（数据文件仍在 `/var/lib/pgsql/data`，回滚 = `systemctl enable --now postgresql`）。
+  **`ecas-mqtt-watch.timer` 保留** —— 它只读 `/var/log/mosquitto/mosquitto.log`，不碰数据库。
+- **退库后云端只剩中转与边缘**：监听仅 `:1883`(回环) / `:8883` / `:8884` / `:80` / `:443`（5432、8080 消失）；
+  `mosquitto` active、`easytier` Up、`ecas-edge` Up (healthy)；公网 `https /healthz`=200、`/api/readings`=401；
+  mosquitto 日志里现场 DTU（出口 `180.108.106.59`）仍在发布 ⇒ **中转职责未受影响**。
+- **本地库成为唯一副本 ⇒ 备份责任随之上线**：
+  - `web/deploy/ubuntu/backup/ecas-backup.sh` + `systemd/ecas-backup.service` + `systemd/ecas-backup.timer`
+    （`OnCalendar=*-*-* 03:30:00`、`Persistent=true`、`RandomizedDelaySec=300`）；
+  - 产物 `/data/ecas/backups/ecas-YYYY-MM-DD.dump`（自定义格式）+ 同名 `.sha256`，保留 30 天；
+    先写 `.part` → 用 `pg_restore -l` 验一遍可读 → 才 `mv` 就位（**绝不拿半截 dump 盖掉上一份好备份**）；
+  - 手动跑一次：`./web/deploy/ubuntu/deploy.sh backup`；查日志：`journalctl -u ecas-backup`。
+  - 首次结果：`13K ｜ 线上 784 行 ｜ sha256 cf9f5c7f6ad17407…`，定时器下次 `2026-09-27 03:32:28 CST`；
+    **恢复演练**（临时库 `ecas_drill` 灌入该 dump）：复原 784 行、最早 `2026-09-25 17:05:22+08`、
+    最新 `2026-09-26 20:57:54+08`，演练库随即 drop ✅。
+- **遗留待办**：① 云端 `ecas-healthcheck.sh` 那套看门狗（>10 分钟无数据=断流、DTU 被拒、冒名事件）随退库停用，
+  需要迁到本地跑；② 本地备份目前只有同机一份，**异地副本仍未做**（原 §12.2 待办项）。
+
+迁移路上的三个坑见 §8.5（`pg_dump` 清空 `search_path`、`docker compose exec` 吃掉脚本流、`pipefail` 下 `grep -q` 触发 SIGPIPE）。
+
+### 5.10 本地看门狗（2026-09-26 上线，接替云端 healthcheck）
+
+云端那套 `ecas-healthcheck.sh` 依赖云库、随退库停用 ⇒ 巡检责任搬到 Ubuntu 本机，先生明确「看门狗装在 ubuntu 上」。
+
+- **每 5 分钟跑一次**（`ecas-watchdog.timer`：`OnBootSec=3min` + `OnUnitActiveSec=5min`），盯六件事：
+
+| 项 | 判据 | 默认阈值 | 为什么盯 |
+| --- | --- | --- | --- |
+| `db` | db 容器在跑 + `pg_isready` + 能 `count(*)` | — | 库是全栈的地基，也是唯一副本 |
+| `fresh` | 最新一条 `raw_reading` 距今多久 | **> 10 分钟** 即 crit（现场节拍 100s） | **最可能出的故障：DTU/链路静默断流** |
+| `collector` | db/api/collector 三容器 running、health 非 unhealthy、15 分钟内重启 ≤ 3 次 | — | 崩溃循环会让数据悄悄断 |
+| `api` | 本机 `http://$BIND_IP:$ECAS_WEB_PORT/healthz` = 200 | — | 看板挂了但采集还在，容易几小时没人发现 |
+| `backup` | 最新 dump 距今多少小时 | **> 26 小时** 即 crit | 备份定时器坏掉＝没有备份 |
+| `disk` | `/data` 与 `/` 使用率 | 85% 警告 / 92% 严重 | `/data` 写满＝采集与库一起停 |
+
+- **产物**（`/var/log/ecas/watchdog.jsonl` 事件流水、`/var/lib/ecas/watchdog.state` 当前状态、
+  `public.health_event` 表、journald 汇总 `journalctl -u ecas-watchdog`）。
+  **只在「状态变化」时落事件**（正常→异常、异常→恢复），避免每 5 分钟刷屏；首次运行只建基线不落事件。
+  退出码恒为 0 —— 现场 DTU 夜间停发属正常，把 unit 打成 failed 会淹没真故障；异常靠 journal/文件/表呈现。
+- **手动跑一次**：`./web/deploy/ubuntu/deploy.sh watchdog`（结果 + 最近事件）。
+- **通知钩子**：`/opt/ecas/.env` 里设 `WATCHDOG_NOTIFY_CMD=/path/to/脚本`，状态变化时把一行中文消息作**唯一参数**传给它。
+  **当前未设置** ⇒ 看门狗只负责「发现 + 记录」，**还没有任何推送**（报警外发通道仍是待先生决定项，§12.2）。
+- **故障演练证据（2026-09-26 21:05，安全无副作用）**：用 `STALE_MIN=0` 跑一次 ⇒
+  `fresh → crit（problem）：最新数据 1 分钟前（2026-09-26 21:04:37），超过 0 分钟阈值`，
+  随即正常跑一次 ⇒ `fresh → ok（cleared）`；`health_event` 表里两行都在，JSONL 两行也在 ✅
+  （证明「检测 → 落文件 → 落库 → 恢复」整条链路真的通，不是空转）。
+- 自检时踩到并已修的两个坑：① `psql -Atc` 多列用 `|` 分隔，`read` 必须显式 `IFS='|'`，否则整行塞进第一个变量，
+  整数比较报 `值对于底数而言过大`，`fresh` 这项会静默消失；② 首次运行（无状态文件）若照常比对照落事件，
+  会平白写一堆 `cleared` 误导人 ⇒ 现在首次只建基线。
+
 ---
 
 ## 6. 本地开发栈（Mac）
@@ -898,6 +1063,14 @@ web/scripts/sync-from-cloud.sh    # ssh + pg_dump → 本地 ecas_dev（--clean 
 | 日志刷 `wrong version number`，但**看不出是哪种方向错** | ① 明文打到 TLS 口 ② TLS 打到明文口 —— **日志无法区分**（两者都报同一句） | **抓包看首字节最省事**：`tcpdump -i any -nn -A -c 6 "tcp port 8883 and (tcp[13] & 8 != 0)"`。看到 `...MQTT...` = 明文；看到 `\x16\x03\x01` = TLS。2026-09-26 用这招坐实**塔石 DTU 只会发明文** |
 | 塔石 DTU 配了 SSL 却怎么都不通 | 其配置软件**无法上传 CA 证书** ⇒ 只能退回明文；且改端口可能顺带把 SSL 开关重置 | 接受明文 + 走应用层加固（本节下方 §8.6）；TLS 参数留给 8884 备用口 |
 | 冒名检测把 `auto-<UUID>` 的 ClientId 报成"未知ClientId" | `mosquitto_sub` 不写 `-i` 时自造 `auto-…` 形式的 ClientId；脚本早期只识别纯 UUID 形式 | 已修：`client_raw` 允许 `auto-` 前缀（`scripts/485/mqtt_watch.sh:105`）。**本机排障订阅请显式 `-i dpro66-monitor`** |
+| 测试机采集器连 `124.222.122.146:8884` 一直 `TimeoutError` | **8884 未放行腾讯云安全组**（云端配置注释自己写着「公网不可达，仅作就绪备用」） | 改走 mesh 连 `10.10.10.123:8884`（§5.7.1）；**不要为此放行安全组** —— 先生要求走腾讯云、不用测试机本地出口 |
+| `host name verification failed`（客户端是测试机采集器，走 mesh） | SAN 只有 `IP:124.222.122.146 / IP:127.0.0.1 / DNS:VM-0-13-opencloudos`，**没有 `10.10.10.123`** | 用「CA 链校验 + leaf 证书 SHA-256 指纹钉扎」替代主机名校验（§5.7.1）；云端重签证书后必须更新 `MQTT_CERT_SHA256`，否则 fail closed |
+| 云端 `apt-get: command not found`、`dnf info nginx` 报 `No matching Packages` | 云端是 **OpenCloudOS 9.4**（RHEL 系）：只有 `dnf`/`yum`，仓库 = AppStream/BaseOS/EPOL/extras/docker-ce，**不含 nginx** | 公网边缘改用**容器** `nginx:1.27-alpine`（`network_mode: host`），见 §5.8；不要去动宝塔 |
+| 浏览器访问公网边缘报「证书不受信」 | 没有域名 ⇒ Let's Encrypt 签不了 IP 证书，用的是自签（`CN=IP`、SAN 含该 IP） | 点一次「继续访问」即可（流量仍是加密的）；拿到域名后换 Let's Encrypt（§5.8） |
+| `pg_dump` 出来的 SQL 一执行就报 `ERROR: relation "raw_reading" does not exist` | dump 开头有 `SELECT pg_catalog.set_config('search_path','',false);`，**把搜索路径清空了** —— 未限定 schema 的表名解析不到（临时表 `pg_temp` 例外，仍能解析） | 目标表一律写成 `public.raw_reading`；迁移时先灌 `stage_raw_import` 再 `INSERT … ON CONFLICT DO NOTHING`（§5.9） |
+| 经 `ssh host 'sudo bash -s'` 喂进来的脚本，**中途有几条命令静默不执行** | 脚本里 `docker compose exec -T …` **把后续脚本流当自己的 stdin 吃掉了** | 每个 `docker compose exec` 后面加 `< /dev/null`（脚本里其他可能读 stdin 的命令同理） |
+| 部署脚本里远端命令报 `bash: 行 182: systemctl: command not found`，值全空 | `sudo_script <<EOF`（**未加引号**）会在**本机 Mac** 上先做命令替换，`$(systemctl …)` 于是在本机执行 | 远端要写的命令替换一律转义：`\$(systemctl …)`；或改用 `<<'EOF'`（但那样 `$REMOTE` 等变量也不会展开，需另想办法） |
+| `systemctl list-unit-files \| grep -q '^postgresql'` 判定为假，结果该停的服务没停 | `set -o pipefail` + `grep -q`：`grep` 命中即退出 → `systemctl` 收到 SIGPIPE（141）→ 整条管道返回非零 | 守卫判断别用 `grep -q` 配 `pipefail`；改成 `grep -c` 计数或先落变量再判断 |
 
 ### 8.6 安全加固
 
@@ -946,16 +1119,6 @@ web/scripts/sync-from-cloud.sh    # ssh + pg_dump → 本地 ecas_dev（--clean 
 | 提交里混进别的会话的未提交改动（HEAD 构建失败：`TS2322 … Property 'hours' does not exist`） | 多会话共用同一工作区 | 提交前先 `git show HEAD:<path>` 对照、只 `git add` 自己改的文件；用 `git worktree add --detach /tmp/ecas-clean HEAD` 做**干净构建**验证（脏树产物 hash/体积不同即为信号） |
 | 手机端「显示不对」无法复现 | 无真机 / 本机无浏览器 | Playwright ＋ Chrome for Testing（`executablePath` 指 `/tmp/chrome-1200/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`），`addInitScript` 注入 `localStorage.ecas_token`，量 `document.documentElement.scrollWidth - innerWidth` 与 `getBoundingClientRect().right > vw` 的元素清单 |
 | 线上「区间统计条」变成标签和值挤在一样的 9 行纯文本 | 重写 styles.css 为新版 strip（`.strip-head`/`.strip-sec`/`.tile`）时删掉了 `.strip .cell`/`.k`/`.v`，但当时**已提交**的 `SummaryStrip.tsx` 仍在用 `.cell` ⇒ 类名悬空、无网格无等宽数字 | 已用 `.strip:has(> .cell)` 限定「直接子元素是 .cell 时」补回旧网格（不影响新版 `.tile`）；**推广做法**：改 CSS 类名前先比对「源码 `className` ↔ CSS 已定义类」两份清单——本次脚本正好查出 `cell`/`v` 悬空（`alarm-table`/`recent-table` 只是钩子、无需定义）。另注意：CSS 与 JSX 若在不同提交里落地，部署出来的线上就是**两版错配**的样子 |
-
-### 8.10 安全加固（2026-09-28「立即三件套 + H-03」，详见 `docs/ECAS安全审查报告.md`）
-
-| 现象 / 风险 | 根因 | 处置 / 教训 |
-| --- | --- | --- |
-| 令牌没配 = 门全开（fail-open） | `auth.token_ok()` 旧写法 `if not expected: return True`；`backend/entrypoint.sh` 旧写法令牌缺失只 `warning` 后继续跑 | 改 **fail-closed**：`/api/*` 无令牌一律 **503**（文案指路）；entrypoint 令牌文件缺失/为空 **`exit 1`**；本机要裸跑必须**显式** `ECAS_ALLOW_NO_AUTH=1`（测试会话由 `web/backend/tests/conftest.py` 在导入 `app.main` 之前设） |
-| 生产 `/docs`·`/redoc`·`/openapi.json` 无需认证可读（等于给攻击者一张路由地图） | FastAPI 默认开接口文档 | `settings.enable_docs=False` + `main._docs_kwargs()` 把三个 URL 全置 `None`——**必须在构造 `FastAPI()` 时决定**，起完再改不生效 |
-| 账号内部接口与对外中继**共用一把令牌** | `accounts.require_internal_token()` 直接拿 `auth_token`；Worker 也用它 | 新增 `ECAS_INTERNAL_TOKEN`，后端优先用它；Worker 只对 `/internal/accounts*` 注入（`internalToken(env)`，未设回退）。⚠️ **四处要同步**：① 密钥卷 `ecas/ubuntu-test.toml` 加字段（卷内不能原地改：卷外生成 → `cp` 覆盖 → 回读校验 → 跑 `cred-keys-volume-sync.sh sync` 镜像钥匙串 → 更新 `MANIFEST.sha256` 那一行，否则日检报「缺钥匙串字段」）；② `deploy.sh creds` 落 `/opt/ecas/credentials/internal-token`（600 root）；③ compose `secrets: [pg-password, auth-token, internal-token]` + `INTERNAL_TOKEN_FILE: /run/secrets/internal-token`；④ **`wrangler secret put ECAS_INTERNAL_TOKEN` 并 `wrangler deploy`**——漏了第 ④ 步，网关账户功能立刻失效（api 容器日志出现「拒绝内部账户接口调用」），登录页还能开、但登录必失败 |
-| 公网 IP 入口（自签证书）**直通业务后端**，`/docs` 公网可读 | `ecas-edge.conf` 的 `proxy_pass http://10.10.10.11:18080` | 改成**纯跳转**：80/443 一律 `301 https://gateway.xshky.org$request_uri`，只留 `location = /healthz` 返回本地 200（compose healthcheck 不能依赖外网）；HSTS 由正式域名侧下发（Worker `secHeaders()`），自签侧继续不开。⚠️ 改完**必须 `docker compose restart edge`**：`proxy_pass` 与 conf 是挂载进去的，nginx 不会自动 reload，而 `docker compose up -d` 看到容器没变也**不会**重建（实测 `Up 38 hours` 却仍是旧行为）；先 `docker run --rm -v …:/etc/nginx/conf.d/default.conf:ro … nginx -t` 验语法再接 |
-| mosquitto 存在「没生效但会要命」的匿名配置 | `/etc/mosquitto/conf.d/ecas.conf` 写着 `listener 1883` + `allow_anonymous true`，而 `mosquitto.conf` 的 `include_dir` 是注释 ⇒ 当前未加载 | 已把该文件移出 `conf.d/`（`/etc/mosquitto/ecas.conf.disabled-<ts>`）。教训：**改 MQTT 认证只看 `mosquitto.conf` 会漏判**，要连 `conf.d/` 与 `include_dir` 一起看 |
 
 ---
 
@@ -1035,6 +1198,13 @@ web/scripts/sync-from-cloud.sh    # ssh + pg_dump → 本地 ecas_dev（--clean 
 | 11 | **SSH 只认密钥 + sshguard** | 公网 22 必然被扫；根除口令爆破 | 09-26 |
 | 12 | **数据暂留云服务器，迁本地库暂缓** | 先生原话「后面我将项目迁移到本地服务器再考虑」 | 09-26 |
 | 13 | **Web 栈收在 `web/`，不碰 CLion 工程** | `ecas` 是 C++ 工作区（阶段 0），要"合理安排" | 09-26 |
+| 14 | **第二套环境落地到 Ubuntu Super Server（A 方案：Docker Compose 三容器 + systemd 自启）** | 先生选定；这台机在 easytier mesh 内、是「迁到本地服务器」的第一步；只绑 mesh 地址，公网到不了 | 09-26 |
+| 15 | **采集器走 mesh 连云端的 `10.10.10.123:8884`，既不放行安全组也不走测试机本地外网出口** | 先生原话「**不走 218.88.248.132，走腾讯云服务器出外网**」；且 8884 设计上就不放行公网（「仅作就绪备用」） | 09-26 |
+| 16 | **走 mesh 时用「CA 链校验 + 证书指纹钉扎」替代主机名校验** | SAN 里没有 mesh 地址；给 SAN 补地址要重签证书 + **重启 broker（会断现场 DTU）**，而钉扎零改动云端、仍防中间人，不足是指纹需随重签更新（已写进 `.env.example` 与 §5.7.1） | 09-26 |
+| 17 | **公网发布放在腾讯云做 nginx 反代（容器），Ubuntu 侧继续只绑 mesh** | 先生口述的目标链路第四跳就是「腾讯云发布网页至外网」；先生选「不用域名，用云端外网 IPv4，端口我自己开防火墙」、实现方式选「我装 nginx 做反代」（原话）。Ubuntu 侧只绑 mesh 不公网暴露；公网 TLS 用自签 IP 证书（无域名签不了 ACME）；ADR 5 收窄为「Ubuntu 看板不直接暴露」 | 09-26 |
+| 18 | **云端退居中转：数据库与前后端全部归本地，云端只留 mosquitto + easytier + nginx 边缘** | 先生原话「腾讯云服务器仅作为中转站，无论是 easytier，还是 mqtt，不再需要数据库，数据库全程由本地服务器跑」。云端历史 783 条已补全到本地并 md5 对账一致；云端 `ecas-monitor`/`ecas-web`/`postgresql` 停用（数据留档可回滚），只保留不依赖库的 `ecas-mqtt-watch.timer`；本地库从此是唯一副本，随之新增每日 03:30 备份（§5.9）。代价：看门狗需迁到本地、备份异地副本待做 | 09-26 |
+| 19 | **看门狗装在 Ubuntu 本地（不装云端）** | 先生原话「看门狗装在 ubuntu 上」；库、采集、后端、看板全在本机，断流/崩溃/磁盘满都只有本机能第一时间发现；云端那套 healthcheck 依赖云库已随退库停用。每 5 分钟六项检查 + 状态变化才落事件（§5.10） | 09-26 |
+| 20 | **不做异地备份：备份只留 Ubuntu 本机** | 先生原话「腾讯云不需要任何备份，备份存放在本地服务器」⇒ 云端不留任何备份职责（`ecas-pgdump.timer` 已停用），备份产物只在 `/data/ecas/backups/`。已知代价：同机单盘＝唯一副本（原「异地副本」待办按此决定关闭） | 09-26 |
 
 ---
 
@@ -1047,7 +1217,7 @@ web/scripts/sync-from-cloud.sh    # ssh + pg_dump → 本地 ecas_dev（--clean 
 | 数据库 | IoTDB + PostgreSQL 双库（L5） | 只有 PostgreSQL 16 单库 | 时序压缩/长期存储能力未验证 |
 | MQTT 安全 | TLS 1.3 强制 | ❌ 现场段**只能明文**（塔石 DTU 不支持 TLS、其工具无法上传 CA 证书，2026-09-26 抓包坐实）；8884 为未放行的 TLS 备用口 | 链路可被运营商侧嗅探（门槛高）。应用层减损全部落地：认证 + 主题 ACL + 最小权限账号 + QoS1 去重 + 冒名检测 |
 | 报警外发 | 未定义 | **只在库里记 + 看板显示，没有外发** | 没人盯看板时报警等于没报 |
-| 发布 | 云服务器仅作 MQTT 中转，数据全入本地库 | 数据在云上，本地只做演练 | 先生已明确**暂缓** |
+| 发布 | 云服务器仅作 MQTT 中转，数据全入本地库 | ✅ **2026-09-26 已切换**：DTU → 云 mosquitto（纯中继）→ mesh+TLS → Ubuntu Super Server 采集入库；云端 `ecas-monitor`/`ecas-web`/`postgresql` 全部停用，只剩 mosquitto + easytier + nginx 边缘；网页经云端反代发布 `https://124.222.122.146`（§5.8、§5.9） | 无（云端历史 783 条已补全到本地，md5 一致） |
 
 ### 12.2 待办清单
 
@@ -1058,13 +1228,17 @@ web/scripts/sync-from-cloud.sh    # ssh + pg_dump → 本地 ecas_dev（--clean 
 - [ ] `ecas-monitor` 口令从 argv 改环境变量 —— ⚠️ `mosquitto_sub 2.0.18` **无**从文件/环境读口令的选项
       （`--help` 已核，只有 `-P` / `-L url`），要彻底修需改用 `paho-mqtt` Python 订阅
       （从 `$CREDENTIALS_DIRECTORY/mqtt-pass` 读）；**待先生决定是否引入依赖**
-- [ ] 数据库备份加**异地副本**
+- [x] ~~本地库每日备份~~（2026-09-26：`ecas-backup.timer` 每天 03:30，产物 `/data/ecas/backups/`，恢复演练通过，§5.9）
+- [x] ~~数据库备份加**异地副本**~~ ⇒ 先生 2026-09-26 明确「腾讯云不需要任何备份，备份存放在本地服务器」：**异地副本不做**，只留 Ubuntu 本机 `/data/ecas/backups/`（ADR 20）
+- [x] ~~看门狗迁到本地~~（2026-09-26：`ecas-watchdog.timer` 每 5 分钟六项检查，故障演练通过，§5.10）
+- [ ] 看门狗的**推送**还没通道（`WATCHDOG_NOTIFY_CMD` 未设 ⇒ 只记录不打扰）⇒ **先生定：明天做**，见上方「明天已点名的两件事」
+- [ ] 云端 mosquitto 侧的 DTU 被拒 / 冒名检测仍在云端 `ecas-mqtt-watch.timer`（保留运行），但结果只落云端 JSONL，**没有汇总到看板或看门狗**
 - [ ] 复查 mosquitto autosave（14:54 后 `grep -c "Error saving in-memory database"` 应停在 46）
 
 **等先生决定**
 - [ ] 报警外发通道选哪条（短信 / 微信 / 邮件 / 滴答清单）
 - [ ] 塔石对 TLS 的答复（A/B/C 三选一；**C 已落地**）
-- [ ] 数据迁回本地库（**已明确暂缓**）
+- [x] ~~数据迁回本地库（**已明确暂缓**）~~ ⇒ **2026-09-26 已切换完成**（云端退居中转，历史 783 条补全到本地，md5 一致，见 §5.9 / ADR 18）
 
 **需要现场/控制台操作**
 - [x] ~~DTU QoS 0 → 1~~（先生 2026-09-26 已改）
@@ -1074,16 +1248,48 @@ web/scripts/sync-from-cloud.sh    # ssh + pg_dump → 本地 ecas_dev（--clean 
 - [x] 已将 1883 收回 `127.0.0.1`（2026-09-26 15:19）
 - [x] 已定论：DTU 侧无法 TLS ⇒ 8883 改明文（DTU 口）、TLS 移到未放行的 8884（2026-09-26 15:22，见 §8.5 抓包判据）
 
+#### 明天（2026-09-27）已点名的两件事
+
+1. **Cloudflare 域名接入** —— 先生 2026-09-26 说「明天开始使用 cloudflare 搭建免费域名」。
+   现状：公网入口是 `https://124.222.122.146`（云端 nginx 容器 + 自签 IP 证书，浏览器要手点「继续访问」）。
+   等他定三样：① 用哪个域名/子域；② 路线 A（Cloudflare Tunnel，零开放端口 + 自动可信证书 + 可叠 Access）还是
+   路线 B（保留现 nginx + 橙云代理 + Origin 证书，安全组只放行 Cloudflare 段）；③ 相应凭据（Tunnel token 或 Origin 证书）。
+   接入后要把 `web/deploy/cloud/` 的 compose 与部署脚本同步改掉，并再从真实外网验一遍。
+2. **看门狗推送通道** —— 先生 2026-09-26 说「推送任务也放在明天」。
+   现状：`ecas-watchdog` 每 5 分钟巡检六项、异常落 `health_event` 与 JSONL，但 `/opt/ecas/.env` 里
+   `WATCHDOG_NOTIFY_CMD` 未设 ⇒ **只发现不打扰**。明天定下外发通道（短信 / 微信 / 邮件 / 滴答清单）后设上钩子；
+   顺带把云端 `ecas-mqtt-watch.timer`（DTU 被拒、陌生 ClientID 冒名，现在只在云端 JSONL 里）的结果汇总到同一处，
+   让「所有异常在一个地方看得见」。报警外发通道与 §12.2「报警外发」是同一件事，一起定。
+
 ### 12.3 下次开工前 5 分钟自检
 
+> 2026-09-26 架构切换后，**权威数据库在 Ubuntu Super Server**，云端的 `ecas-web`/`ecas-monitor`/`postgresql`
+> 已按 ADR 18 停用（查它们 inactive 是**正常**的，别再当成故障）。下面这段照新架构来：
+
 ```bash
-ssh ecas 'systemctl is-active ecas-web ecas-monitor mosquitto postgresql sshguard'
-ssh ecas 'psql -h 127.0.0.1 -U ecas -d ecas -c "select count(*), max(ts) from raw_reading"'
-ssh ecas 'date; df -h / | tail -1'
-curl -s -o /dev/null -w 'healthz=%{http_code}\n' localhost:18080/healthz
+# ① Ubuntu Super Server：栈 + 备份 + 数据新鲜度
+ssh ubuntu-super 'systemctl is-active ecas-stack; docker ps --format "{{.Names}} {{.Status}}"'
+ssh ubuntu-super 'cd /opt/ecas && docker compose exec -T db psql -U ecas -d ecas -Atc \
+  "select count(*), max(ts) from public.raw_reading"'
+ssh ubuntu-super 'systemctl list-timers ecas-backup.timer --no-pager | head -2'
+ssh ubuntu-super 'df -h /data | tail -1'
+
+# ② 云端：只剩「中转 + 边缘」，看这三样
+ssh ecas 'systemctl is-active mosquitto; docker ps --format "{{.Names}} {{.Status}}"'
+ssh ecas 'systemctl is-active easytier; tail -3 /var/log/mosquitto/mosquitto.log'
+
+# ③ 公网边缘（外部可达性 + 鉴权是否还在）
+curl -sk -o /dev/null -w 'https healthz=%{http_code}\n' https://124.222.122.146/healthz
+curl -sk -o /dev/null -w 'https api 无令牌=%{http_code}\n' https://124.222.122.146/api/readings
 ```
 
-判定：服务全 active、最新数据在 **5 分钟内**、磁盘余量 > 20%、`healthz=200` ⇒ 链路正常。
+判定：本地三容器全 Up、最新数据在 **5 分钟内**、备份定时器有「下次」时间、`/data` 余量 > 20%、
+云端 mosquitto+easytier+edge 都在、公网 `healthz=200` 且 `api 无令牌=401` ⇒ 链路正常。
+
+```bash
+# ④ 云端退库状态一眼确认（应当全部 inactive/disabled，这是预期）
+ssh ecas 'systemctl is-active ecas-web ecas-monitor postgresql; systemctl is-active ecas-mqtt-watch.timer'
+```
 
 ---
 
