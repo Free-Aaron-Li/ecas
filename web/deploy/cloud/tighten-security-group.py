@@ -262,6 +262,9 @@ def main():
     ap.add_argument("cmd", choices=["show", "plan", "apply", "drop", "trim"],
                     help="show/plan/apply = 收窄 8883 来源；drop/trim = 删除冗余放行规则")
     ap.add_argument("--instance", default=DEFAULT_INSTANCE)
+    ap.add_argument("--sg-id", default=None, dest="sg_id",
+                    help="直接指定安全组 id（如 sg-xxxxxxxx）⇒ 跳过 CVM DescribeInstances，"
+                         "此时密钥只需 VPC 读写权限，不必给 CVM 读权限")
     ap.add_argument("--region", default=DEFAULT_REGION)
     ap.add_argument("--port", default=DEFAULT_PORT)
     ap.add_argument("--allow", action="append", default=None,
@@ -283,7 +286,11 @@ def main():
     deleting = args.cmd in ("drop", "trim")
 
     sid, skey = need_keys()
-    sgs = instance_security_groups(args.instance, args.region, sid, skey)
+    if args.sg_id:
+        print(f"直接指定安全组：{args.sg_id}（跳过 CVM DescribeInstances）")
+        sgs = [args.sg_id]
+    else:
+        sgs = instance_security_groups(args.instance, args.region, sid, skey)
 
     for sg in sgs:
         rules = get_policies(sg, args.region, sid, skey)
