@@ -1133,7 +1133,7 @@ web/scripts/sync-from-cloud.sh    # ssh + pg_dump → 本地 ecas_dev（--clean 
 | 凭据 | 桥接账号 `ecas-bridge` 口令只在 `/Volumes/keys/ecas/mqtt.toml` ＋ macOS 钥匙串；下发经 env 传递，**本机不落盘、不进 argv、不打印**；服务器上只有 `relay.conf`（640 root:mosquitto）含明文（mosquitto 桥接的硬要求） |
 | 监听归属 | `8883` = relay（`0.0.0.0`，明文，现场 DTU）；`8884` = 主 broker（TLS，mesh/回环）；`1883` = 主 broker（仅 `127.0.0.1`） |
 | 白名单 | nftables 表 `inet ecas_relay`：`8883` 只放行 `127.0.0.1` + `180.108.106.0/24`（现场 DTU 运营商段），其余 `drop` ＋ 限速日志（6/分钟，前缀 `ecas-relay-drop`） |
-| 安全组（腾讯云，第一道门） | `8883` 入站来源 = 现场运营商段（与主机侧同口径）；**2026-09-28 已由先生在控制台收口**，实测验证见下。收口脚本 `web/deploy/cloud/tighten-security-group.py`（`show` / `plan` 只读，`apply --confirm` 才写并备份原规则）留给将来用 |
+| 安全组（腾讯云，第一道门） | `8883` 入站来源 = `180.108.106.0/24`（备注 `DTU STL`，与主机侧同口径）；**2026-09-28 已由先生在控制台收口**（先生截图核对），实测验证见下。收口脚本 `web/deploy/cloud/tighten-security-group.py`（`show` / `plan` 只读，`apply --confirm` 才写并备份原规则）留给将来用 |
 
 **用法**（Mac 上，`cd web/deploy/cloud`）：
 
@@ -1176,6 +1176,8 @@ python3 tighten-security-group.py apply --confirm     # 落地（先自动备份
 
 结果：主机侧已放行该源却**仍连不上** ⇒ 包被**安全组**丢掉（第一道门确实收紧了）；随后白名单还原为 `{ 127.0.0.1, 180.108.106.0/24 }`。
 同期不受影响：`raw_reading` 继续入库（`2283` 行、`max(ts)` 距 `now()` 27 秒）、relay/mosquitto/白名单 unit 三者 active、`http://124.222.122.146/` 仍 `301 → https://gateway.xshky.org/`、`gateway.xshky.org/login` 200、无令牌 `/api/params` 401。
+
+**顺带可清理的一条**（不紧急）：安全组里仍有 `全部IPv4地址 → TCP 1883 允许`（备注 `MQTT`），但实测 mosquitto 只监听 `127.0.0.1:1883`（`ss -ltn` 无 `0.0.0.0:1883`）⇒ **今天并未暴露**，只是这条规则已无必要，删掉可少一扇门。`8884` 未出现在安全组里是对的（设计上只走 mesh/回环）。`12121`/`21212` 属 EasyTier，按先生裁定不动。
 
 **踩过的坑**：
 
