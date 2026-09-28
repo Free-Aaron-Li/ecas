@@ -38,6 +38,18 @@
 - **MQTT 最小权限 ACL**：DTU 只写、采集器只读；匿名 CONNECT 在公网 8883、本机 1883/8883/8884 实测**全部 rc=5 拒绝**。
 - **仓库无机密泄露**：git 历史无 `.env`/私钥（只有 `.env.example`），`.gitignore:98` 覆盖 `web/backend/.env`，Worker `vars` 为空（密钥走 secret store），前端无 `innerHTML/eval` 类 XSS sink。
 
+### 0.4 处置进度（2026-09-28，先生令「立刻按照建议解决」）
+
+| 项 | 处置 | 证据 |
+|---|---|---|
+| **M-01** 生产接口文档公开 | ✅ **已关闭** | `settings.enable_docs=False` + `_docs_kwargs()` 在构造 FastAPI 时就置 `docs_url/redoc_url/openapi_url=None`；线上实测 `/docs`·`/redoc`·`/openapi.json` 全 **404**（改前 200） |
+| **M-02** 单令牌通吃对外与内部 | ✅ **已分离** | 新增 `ECAS_INTERNAL_TOKEN`；后端 `require_internal_token` 优先用它；Worker 只对 `/internal/accounts*` 注入内部令牌（`internalToken(env)`，未设则回退）；线上实测：无令牌 **401** / **对外令牌 401** / 内部令牌 **200**；`viewer` 真登录经网关 **302** |
+| **M-03** 令牌缺失时 fail-open | ✅ **已改 fail-closed** | `token_ok()` 无期望值即 False；`/api/*` 未配置令牌返回 **503**（文案指路 `ECAS_ALLOW_NO_AUTH=1`）；`entrypoint.sh` 令牌文件缺失/为空 **`exit 1`**，不再「警告后裸跑」；本机四组裸跑 + 真进程探针复现通过；单测 77 passed |
+| **H-03** IP 入口自签证书 + 无 HSTS | ✅ **已降级为纯跳转** | `web/deploy/cloud/nginx/ecas-edge.conf` 删掉全部 `proxy_pass`：80/443 一律 **301 → https://gateway.xshky.org**，只留本地 `location = /healthz` 返回 200（健康检查不能依赖外网）；云端实测 `/`·`/docs` **301**、`/healthz` **200**；HSTS 改由**正式域名**侧下发（Worker `secHeaders()` 增 `strict-transport-security: max-age=15552000`，不加 `includeSubDomains`），自签侧继续不开（写进注释说明原因） |
+| **L-07** mosquitto `conf.d/ecas.conf` 匿名残留 | ✅ **已移出** | 云机 `/etc/mosquitto/conf.d/ecas.conf` → `/etc/mosquitto/ecas.conf.disabled-20260928-110154`；确认 `mosquitto.conf` 的 `include_dir` 仍是注释（该文件此前从未生效） |
+| **H-01** DTU 明文 8883 | ⏳ 按先生方案改为「独立转发机」 | 明文问题 DTU 侧无法解决；改为在腾讯云机上做只转发的 MQTT 中继，**不落原始数据**（待施工） |
+| **H-02** 共享生产机 + `ubuntu ∈ docker` | ⛔ 先生明确不迁移 | 老项目太多、无法搬迁；缓解措施见 §4「短期」 |
+
 ---
 
 ## 1. 资产与信任边界
@@ -348,9 +360,10 @@ KbdInteractiveAuthentication no
 ### 立即（本周）
 
 1. **H-01**：给 DTU 通道上加密（迁 8884 / 加隧道），并**轮换** `dpro66-dtu` 与 `ecas-monitor` 口令；开启 Broker 审计日志。
-2. **H-03**：IP 入口改为「仅 301 跳域名」，或直接关闭；解开 HSTS 注释。
-3. **M-01 + M-02**：关闭生产文档（`docs_url=None, redoc_url=None, openapi_url=None`）；edge 屏蔽 `/internal/`、`/docs`、`/redoc`、`/openapi.json`；拆分内部令牌。
-4. **M-03**：调成 fail-closed（entrypoint 缺 secret 即 `exit 1`；`token_ok` 未配置返回 False）。
+   —— 先生 2026-09-28 裁定：明文无法在 DTU 侧解决 ⇒ 改为「单独 1 台服务器做数据转发，不直接触碰原始数据」（转发机＝腾讯云机，其上已有 easytier 服务）。
+2. **H-03** ✅（2026-09-28 已做）：IP 入口改为「仅 301 跳域名」；HSTS 由正式域名侧（Worker）下发，自签侧不开。
+3. **M-01 + M-02** ✅（2026-09-28 已做）：关闭生产文档；内部令牌与对外令牌分离；edge 不再有任何反代路径（`/internal/`·`/docs`·`/redoc`·`/openapi.json` 全部 301 走人）。
+4. **M-03** ✅（2026-09-28 已做）：fail-closed（entrypoint 缺 secret 即 `exit 1`；`token_ok` 未配置返回 False）。
 
 ### 短期（两周）
 

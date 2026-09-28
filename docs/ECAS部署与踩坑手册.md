@@ -947,6 +947,16 @@ web/scripts/sync-from-cloud.sh    # ssh + pg_dump → 本地 ecas_dev（--clean 
 | 手机端「显示不对」无法复现 | 无真机 / 本机无浏览器 | Playwright ＋ Chrome for Testing（`executablePath` 指 `/tmp/chrome-1200/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`），`addInitScript` 注入 `localStorage.ecas_token`，量 `document.documentElement.scrollWidth - innerWidth` 与 `getBoundingClientRect().right > vw` 的元素清单 |
 | 线上「区间统计条」变成标签和值挤在一样的 9 行纯文本 | 重写 styles.css 为新版 strip（`.strip-head`/`.strip-sec`/`.tile`）时删掉了 `.strip .cell`/`.k`/`.v`，但当时**已提交**的 `SummaryStrip.tsx` 仍在用 `.cell` ⇒ 类名悬空、无网格无等宽数字 | 已用 `.strip:has(> .cell)` 限定「直接子元素是 .cell 时」补回旧网格（不影响新版 `.tile`）；**推广做法**：改 CSS 类名前先比对「源码 `className` ↔ CSS 已定义类」两份清单——本次脚本正好查出 `cell`/`v` 悬空（`alarm-table`/`recent-table` 只是钩子、无需定义）。另注意：CSS 与 JSX 若在不同提交里落地，部署出来的线上就是**两版错配**的样子 |
 
+### 8.10 安全加固（2026-09-28「立即三件套 + H-03」，详见 `docs/ECAS安全审查报告.md`）
+
+| 现象 / 风险 | 根因 | 处置 / 教训 |
+| --- | --- | --- |
+| 令牌没配 = 门全开（fail-open） | `auth.token_ok()` 旧写法 `if not expected: return True`；`backend/entrypoint.sh` 旧写法令牌缺失只 `warning` 后继续跑 | 改 **fail-closed**：`/api/*` 无令牌一律 **503**（文案指路）；entrypoint 令牌文件缺失/为空 **`exit 1`**；本机要裸跑必须**显式** `ECAS_ALLOW_NO_AUTH=1`（测试会话由 `web/backend/tests/conftest.py` 在导入 `app.main` 之前设） |
+| 生产 `/docs`·`/redoc`·`/openapi.json` 无需认证可读（等于给攻击者一张路由地图） | FastAPI 默认开接口文档 | `settings.enable_docs=False` + `main._docs_kwargs()` 把三个 URL 全置 `None`——**必须在构造 `FastAPI()` 时决定**，起完再改不生效 |
+| 账号内部接口与对外中继**共用一把令牌** | `accounts.require_internal_token()` 直接拿 `auth_token`；Worker 也用它 | 新增 `ECAS_INTERNAL_TOKEN`，后端优先用它；Worker 只对 `/internal/accounts*` 注入（`internalToken(env)`，未设回退）。⚠️ **四处要同步**：① 密钥卷 `ecas/ubuntu-test.toml` 加字段（卷内不能原地改：卷外生成 → `cp` 覆盖 → 回读校验 → 跑 `cred-keys-volume-sync.sh sync` 镜像钥匙串 → 更新 `MANIFEST.sha256` 那一行，否则日检报「缺钥匙串字段」）；② `deploy.sh creds` 落 `/opt/ecas/credentials/internal-token`（600 root）；③ compose `secrets: [pg-password, auth-token, internal-token]` + `INTERNAL_TOKEN_FILE: /run/secrets/internal-token`；④ **`wrangler secret put ECAS_INTERNAL_TOKEN` 并 `wrangler deploy`**——漏了第 ④ 步，网关账户功能立刻失效（api 容器日志出现「拒绝内部账户接口调用」），登录页还能开、但登录必失败 |
+| 公网 IP 入口（自签证书）**直通业务后端**，`/docs` 公网可读 | `ecas-edge.conf` 的 `proxy_pass http://10.10.10.11:18080` | 改成**纯跳转**：80/443 一律 `301 https://gateway.xshky.org$request_uri`，只留 `location = /healthz` 返回本地 200（compose healthcheck 不能依赖外网）；HSTS 由正式域名侧下发（Worker `secHeaders()`），自签侧继续不开。⚠️ 改完**必须 `docker compose restart edge`**：`proxy_pass` 与 conf 是挂载进去的，nginx 不会自动 reload，而 `docker compose up -d` 看到容器没变也**不会**重建（实测 `Up 38 hours` 却仍是旧行为）；先 `docker run --rm -v …:/etc/nginx/conf.d/default.conf:ro … nginx -t` 验语法再接 |
+| mosquitto 存在「没生效但会要命」的匿名配置 | `/etc/mosquitto/conf.d/ecas.conf` 写着 `listener 1883` + `allow_anonymous true`，而 `mosquitto.conf` 的 `include_dir` 是注释 ⇒ 当前未加载 | 已把该文件移出 `conf.d/`（`/etc/mosquitto/ecas.conf.disabled-<ts>`）。教训：**改 MQTT 认证只看 `mosquitto.conf` 会漏判**，要连 `conf.d/` 与 `include_dir` 一起看 |
+
 ---
 
 ## 9. 常用命令速查
