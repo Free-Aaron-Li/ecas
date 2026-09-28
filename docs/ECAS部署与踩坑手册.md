@@ -1133,6 +1133,7 @@ web/scripts/sync-from-cloud.sh    # ssh + pg_dump → 本地 ecas_dev（--clean 
 | 凭据 | 桥接账号 `ecas-bridge` 口令只在 `/Volumes/keys/ecas/mqtt.toml` ＋ macOS 钥匙串；下发经 env 传递，**本机不落盘、不进 argv、不打印**；服务器上只有 `relay.conf`（640 root:mosquitto）含明文（mosquitto 桥接的硬要求） |
 | 监听归属 | `8883` = relay（`0.0.0.0`，明文，现场 DTU）；`8884` = 主 broker（TLS，mesh/回环）；`1883` = 主 broker（仅 `127.0.0.1`） |
 | 白名单 | nftables 表 `inet ecas_relay`：`8883` 只放行 `127.0.0.1` + `180.108.106.0/24`（现场 DTU 运营商段），其余 `drop` ＋ 限速日志（6/分钟，前缀 `ecas-relay-drop`） |
+| 安全组（腾讯云，第一道门） | `8883` 入站来源应收成 `180.108.106.0/24`（与主机侧同口径）；收口脚本 `web/deploy/cloud/tighten-security-group.py`（`show` / `plan` 只读，`apply --confirm` 才写并备份原规则）。**2026-09-28 状态：脚本就绪、待凭据** —— 本机与云机都没有腾讯云 AK（`tccli` 未装），实例元数据 `cam/security-credentials/` 404（无 CAM 角色） |
 
 **用法**（Mac 上，`cd web/deploy/cloud`）：
 
@@ -1152,6 +1153,18 @@ web/scripts/sync-from-cloud.sh    # ssh + pg_dump → 本地 ecas_dev（--clean 
 **验证证据（2026-09-28 14:29，白名单启用后）**：① 回环 `127.0.0.1:8883` 连接成功；② 云机自连自己公网 IP `124.222.122.146:8883` 超时；③ Mac（出口 `218.88.248.132`）连 `124.222.122.146:8883` 超时；④ `counter packets 17 bytes 1048 drop`，内核日志出现 `ecas-relay-drop … SRC=218.88.248.132 … DPT=8883`；⑤ 同期 `raw_reading` 计数与 `max(ts)` 继续前进（DTU 在白名单内，既有会话未断）。
 
 **安全网**：白名单若误伤 DTU，`ubuntu-super` 上的 `ecas-watchdog.sh` 的 `fresh` 判据（`STALE_MIN=10` 分钟，现场节拍 ~100s）会在 10 分钟内 `crit` 播报。
+
+**两层同口径**：`8883` 的访问控制有两层 —— **腾讯云安全组（第一道门，控制面）** ＋ **主机 nftables（第二道门，已生效）**。两层的放行来源应一致（`180.108.106.0/24`），安全组侧重在包到达主机前就丢弃扫描流量。安全组收口脚本（纯标准库实现 TC3-HMAC-SHA256，无需装 SDK；密钥只从环境变量读、不进 argv）：
+
+```bash
+cd web/deploy/cloud
+export TENCENTCLOUD_SECRET_ID=... TENCENTCLOUD_SECRET_KEY=...   # 建议：只有 VPC 读写权限的 CAM 子用户，用完即删
+python3 tighten-security-group.py show                # 现状：实例绑定的安全组 + 全部入站规则
+python3 tighten-security-group.py plan                # 将要做的改动（零写入）
+python3 tighten-security-group.py apply --confirm     # 落地（先自动备份 tighten-sg-backup-<时间戳>.json）
+```
+
+只改「`Action=ACCEPT` ＋ 端口命中 `8883` ＋ 来源为 `0.0.0.0/0`」的那一条，其余端口规则原样保留（`11010`/`12121` 等按先生裁定不动）；提交后重新 `Describe` 校验并打印。**签名链路已验证**：用假密钥会返回 `AuthFailure.SecretIdNotFound`，说明请求确实到了腾讯云 API，只差一把有效密钥。
 
 **踩过的坑**：
 

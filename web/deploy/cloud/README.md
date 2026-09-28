@@ -101,11 +101,19 @@ DTU 侧支持 TLS 后撤掉明文口（根治）。
 | `nginx/ecas-edge.conf` | 纯跳转模板：80/443 → 301 正式域名；只留本机 `/healthz` |
 | `deploy-cloud-edge.sh` | 部署与自检脚本（在 Mac 上跑，`ssh ecas` 直达云端 root） |
 | `mqtt-relay/*`、`deploy-cloud-mqtt-relay.sh` | MQTT 转发机（见上） |
+| `tighten-security-group.py` | 腾讯云**安全组**收口（TC3 签名，纯标准库）：`show`/`plan` 只读，`apply --confirm` 才写并自动备份原规则；密钥只从环境变量读 |
 
 ## 三、历史备注（仍然有效）
 
 1. **安全组**要在腾讯云控制台放行 `80`/`443`（脚本改不了）；云端 `firewalld` 未运行，不需要额外放行。
    ECAS 相关公网面收敛为 `80`/`443`（纯跳转）+ `8883`（DTU 必需，现由转发机承担）；EasyTier 的 `11010`/`12121` 按先生裁定不动。
+   - **安全组收口（与主机侧同口径）**：主机侧 nftables 白名单已生效，安全组这一层用
+     `python3 tighten-security-group.py show|plan` 看现状、`apply --confirm` 落地（把 `8883` 入站来源从 `0.0.0.0/0`
+     改成 `180.108.106.0/24`，其余端口的规则原样保留，改动前自动备份 `tighten-sg-backup-<时间戳>.json`）。
+     密钥只从 `TENCENTCLOUD_SECRET_ID/KEY` 读，建议用**只有 VPC 读写权限的 CAM 子用户**，用完即删。
+   - **2026-09-28 状态：脚本已就绪，待凭据** —— 本机与云机都没有腾讯云 AK（`tccli` 未装），云机实例元数据
+     `meta-data/cam/security-credentials/` 返回 404（未绑定 CAM 角色）⇒ 这一层要么在控制台点，
+     要么给一份临时密钥（`show` 已验证签名链路可达：假密钥返回 `AuthFailure.SecretIdNotFound`）。
 2. **自签证书阶段故意不开 HSTS**（否则浏览器被钉在告警页）；HSTS 由正式域名侧（Worker `secHeaders()`）下发。
    未拿域名前，IP 入口的证书告警仍然存在，但**流量只到跳转为止**，不再承载会话与数据。
 3. **为什么用容器而不是装 nginx 包**：这台云主机是 **OpenCloudOS 9.4**（RHEL 系），仓库里没有 nginx 包；
