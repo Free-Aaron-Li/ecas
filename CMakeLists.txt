@@ -14,7 +14,7 @@
 
 # 1. CMake 配置
 # 1.1 最低 CMake 版本要求
-cmake_minimum_required(VERSION 3.28)
+cmake_minimum_required(VERSION 4.4)
 # 1.2 生成编译命令，用于第三方软件识别
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
