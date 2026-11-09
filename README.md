@@ -10,7 +10,9 @@
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-18+-blue.svg)](https://www.postgresql.org)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-> ⚠️ **重构进行中**：本项目正处于开发计划的 **阶段 0（地基与验证）**。当前仅完成 CMake / Doxygen / README 等基础表述，**目录组织结构与全部代码将从零搭建**，既有旧代码将完全重构、不作为基线。详见「当前状态」。
+> ⚠️ **重构进行中**：本项目正处于开发计划的 **阶段 0（地基与验证）**。当前仅完成 CMake / Doxygen / README 等基础表述，C++ 端目录组织与代码将从零搭建，既有旧代码将完全重构、不作为基线。详见「当前状态」。
+>
+> 📦 **多端 monorepo**：仓库已按交付端拆分 —— `cpp/`（C++26 + Qt 6 桌面/现场端，CMake 工程根）、`web/`（FastAPI + React 站点，见 [web/README.md](web/README.md)）、`miniapp/`（微信小程序，规划中）、`shared/`（跨端共享契约）。本 README 主体描述整体架构与 C++ 端，Web 端细节以 `web/` 内文档为准。
 
 ---
 
@@ -84,31 +86,42 @@ ECAS（Edge-Cloud Acquisition System，边缘-云端数据采集系统）覆盖�
 ## 4. 目录结构（目标，搭建中）
 
 ```text
-ecas/
-├── CMakeLists.txt          # 顶层构建配置
-├── README.md
-├── conandata.yml           # 依赖版本单一事实源（Conan）
-├── conanfile.py            # Conan 配方（CMakeDeps + CMakeToolchain）
-├── cmake/                  # CMake 辅助脚本
-├── src/                    # 核心源码（命名空间分层：ecas::<layer>::<module>）
-│   ├── foundation/         # 基础库：error / log / raii / config / coroutine /
-│   │                       #   reflect / contracts / crypto / audit / concepts
-│   ├── acquisition/        # L1–L3 采集：driver / protocol / scheduler / buffer / control
-│   ├── communication/      # L4 传输：mqtt / gateway / discovery / channel
-│   ├── storage/            # L5 持久：iotdb / postgresql / cache / encryption
-│   ├── application/        # L6–L7 业务：settings / config_watcher / node_manager /
-│   │                       #   alert_engine / event_bus / control_engine / audit_manager
-│   └── ui/                 # L8 展示（Qt 6）：main / dashboard / device_panel /
-│                           #   history / alarm / control / audit / config
-├── plugins/                # 插件（动态库）：protocols / drivers / storage / control
-├── tests/                  # 单元 / 集成 / 协程·反射·契约测试
-├── doc/                    # 设计与计划文档（见「文档地图」）
-├── deploy/                 # 部署：Docker Compose / K8s / 配置样例
-├── scripts/                # 构建与运维脚本
-└── resources/              # 图标、翻译、样式
+ecas/                           # 多端 monorepo：一个产品，多个交付端
+├── README.md                   #   总览（本文件）：整体架构 + C++ 端
+├── cpp/                        # ── C++26 / Qt 6：桌面与现场端（CMake 工程根）
+│   ├── CMakeLists.txt          #   顶层构建配置（cmake -S cpp）
+│   ├── conanfile.py            #   Conan 配方（CMakeDeps + CMakeToolchain）
+│   ├── conandata.yml           #   依赖版本单一事实源
+│   ├── cmake/                  #   CMake 辅助脚本
+│   ├── src/                    #   源码（命名空间分层：ecas::<layer>::<module>）
+│   │   ├── foundation/         #     基础库：error / log / raii / config / coroutine /
+│   │   │                       #       reflect / contracts / crypto / audit / concepts
+│   │   ├── acquisition/        #     L1–L3 采集：driver / protocol / scheduler / buffer / control
+│   │   ├── communication/      #     L4 传输：mqtt / gateway / discovery / channel
+│   │   ├── storage/            #     L5 持久：iotdb / postgresql / cache / encryption
+│   │   ├── application/        #     L6–L7 业务：settings / config_watcher / node_manager /
+│   │   │                       #       alert_engine / event_bus / control_engine / audit_manager
+│   │   └── ui/                 #     L8 展示（Qt 6）：main / dashboard / device_panel /
+│   │                           #       history / alarm / control / audit / config
+│   ├── plugins/                #   插件（动态库）：protocols / drivers / storage / control
+│   ├── tests/                  #   单元 / 集成 / 协程·反射·契约测试
+│   ├── resources/              #   图标、翻译、样式
+│   └── tools/doxygen_tools/    #   Doxygen 模板、布局、样式与 markdown 过滤脚本
+├── web/                        # ── Web 端：FastAPI 后端 + React 前端 + 部署/脚本
+│   ├── backend/                #   后端（Python 3.12 / FastAPI / uv）
+│   ├── frontend/               #   前端（React + TS + Vite / pnpm）
+│   ├── deploy/                 #   站点部署（容器 / 云侧 / 本机隧道）
+│   └── scripts/                #   站点运维脚本（发布 / 同步 / 看板）
+├── miniapp/                    # ── 微信小程序端（规划中，占位）
+├── shared/                     # ── 跨端共享契约：OpenAPI、协议常量、字段口径、设计 token
+├── deploy/                     # 现场/云端基础设施部署（非 web 站点部分）
+├── scripts/                    # 本机开发与现场运维脚本（485、快照、体检）
+└── docs/                       # 设计与计划文档（见「文档地图」）
 ```
 
 > 采用「命名空间 + 清晰头文件分层」为主（Modules 列为后续可选优化，不阻塞主干）；每模块仅导出必要接口，依赖通过抽象接口注入，禁止循环依赖。
+>
+> 约定：C++ 工程根在 `cpp/`（IDE 直接打开 `cpp/` 或仓库根均可，`.clang-format` 位于仓库根）；新增交付端（小程序、移动端、桌面端之外的端）一律在仓库根新建同级目录，不塞进 `cpp/` 或 `web/`。
 
 ---
 
@@ -141,16 +154,16 @@ ecas/
 
 ---
 
-## 7. 构建与测试
+## 7. 构建与测试（C++ 端）
 
-前置要求：CMake 4.3.1+、Conan 2.x、**GCC 16.2+**（首选）或 Clang 24+（对标）。
+前置要求：CMake 4.4+、Conan 2.x、**GCC 16.2+**（首选）或 Clang 24+（对标）。工程根已移到 `cpp/`，构建目录仍在仓库根 `build/`（已被 `.gitignore` 忽略）。
 
 ```bash
-# 1. 安装依赖（版本由 conandata.yml 锁定）
-conan install . --output-folder=build --build=missing
+# 1. 安装依赖（版本由 cpp/conandata.yml 锁定）
+conan install cpp --output-folder=build --build=missing
 
-# 2. 配置（使用 Conan 生成的 toolchain）
-cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
+# 2. 配置（-S 指向 cpp/，使用 Conan 生成的 toolchain）
+cmake -S cpp -B build -DCMAKE_TOOLCHAIN_FILE=build/conan_toolchain.cmake \
       -DCMAKE_BUILD_TYPE=Release
 
 # 3. 构建
@@ -161,6 +174,10 @@ ctest --test-dir build --output-on-failure
 ```
 
 > 编译要求 `-std=c++26`，警告全开并视为错误（`-Wall -Wextra -Wpedantic -Werror`）。可执行组件（`ecas-edge` / `ecas-central` / `ecas-ui`）随开发阶段逐步产出，当前仓库尚无。
+>
+> 若 `build/` 是目录重构（2026-11-09）之前生成的，CMakeCache 里还是旧的源码路径，先 `rm -rf build` 再按上面步骤配置。
+>
+> Web 端构建与部署见 [web/README.md](web/README.md)；两端互不依赖，可独立构建。
 
 ---
 

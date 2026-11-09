@@ -20,15 +20,15 @@ Doxygen API 文档生成工具包与配置资源。
 
 ## 使用方式
 
-在顶层 CMakeLists.txt 中已集成 Doxygen 目标：
+在 `cpp/CMakeLists.txt` 中已集成 Doxygen 目标（工程根已移到 `cpp/`，命令在**仓库根**执行）：
 
 ```bash
 # 1. 确保系统已安装 doxygen（可选安装 graphviz 以提供 dot 图表支持）
-# 2. 生成构建配置（默认开启 ENABLE_DOXYGEN=ON）
-cmake -B build -S .
+# 2. 生成构建配置（默认 ENABLE_DOXYGEN=ON）
+cmake -S cpp -B build
 
-# 3. 运行文档生成
-cmake --build build --target docs
+# 3. 运行文档生成（目标名 doc，不是 docs）
+cmake --build build --target doc
 ```
 
-生成后的文档将输出至项目根目录下的 `doxygen/html` 目录，通过浏览器打开 `doxygen/html/index.html` 即可浏览。
+生成后的文档输出到 `cpp/doxygen/html`，浏览器打开 `cpp/doxygen/html/index.html` 即可浏览。

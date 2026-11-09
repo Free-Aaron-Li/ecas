@@ -64,7 +64,7 @@ if (ENABLE_DOXYGEN)
         endif ()
 
         # 定义输入模板和输出配置文件的路径
-        set(DOXYFILE_IN ${CMAKE_CURRENT_SOURCE_DIR}/scripts/doxygen_tools/Doxyfile.in)
+        set(DOXYFILE_IN ${CMAKE_CURRENT_SOURCE_DIR}/tools/doxygen_tools/Doxyfile.in)
         set(DOXYFILE_OUT ${CMAKE_CURRENT_BINARY_DIR}/Doxyfile)
 
         if (EXISTS ${DOXYFILE_IN})

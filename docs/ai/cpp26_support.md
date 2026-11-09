@@ -2,7 +2,7 @@
 
 > 状态：✅ 已完成（2026-08-30）
 > 依据：看板任务 T1「工具链验证」；目标工具链见《全局设计》§3.2 / §8.2
-> 冒烟程序：`../../tests/spike/cpp26_hello.cpp`（concepts + `std::expected` → `Result<T>`，六条铁律合规）
+> 冒烟程序：`../../cpp/tests/spike/cpp26_hello.cpp`（concepts + `std::expected` → `Result<T>`，六条铁律合规）
 
 ---
 
@@ -21,7 +21,7 @@
 
 ## 2. 冒烟验证结果（`-std=c++26`）
 
-程序：`../../tests/spike/cpp26_hello.cpp` —— 最小 hello，演示：
+程序：`../../cpp/tests/spike/cpp26_hello.cpp` —— 最小 hello，演示：
 
 - **concepts**：`ecas::Arithmetic`（`std::integral<T> or std::floating_point<T>`），`divide` 模板受约束，含 `static_assert`
   编译期校验；
@@ -64,15 +64,15 @@
 cd /Users/lijc/source/qt/ecas
 
 # 主战场：GCC 16.2
-/opt/homebrew/bin/g++-16 -std=c++26 -Wall -Wextra tests/spike/cpp26_hello.cpp -o /tmp/cpp26_hello_gcc16
+/opt/homebrew/bin/g++-16 -std=c++26 -Wall -Wextra cpp/tests/spike/cpp26_hello.cpp -o /tmp/cpp26_hello_gcc16
 /tmp/cpp26_hello_gcc16
 
 # 对标：Homebrew Clang 23.1
-/opt/homebrew/opt/llvm/bin/clang++ -std=c++26 -Wall -Wextra tests/spike/cpp26_hello.cpp -o /tmp/cpp26_hello_clang23
+/opt/homebrew/opt/llvm/bin/clang++ -std=c++26 -Wall -Wextra cpp/tests/spike/cpp26_hello.cpp -o /tmp/cpp26_hello_clang23
 /tmp/cpp26_hello_clang23
 
 # 探测：系统默认 g++（Apple clang 21）
-/usr/bin/g++ -std=c++26 -Wall -Wextra tests/spike/cpp26_hello.cpp -o /tmp/cpp26_hello_apple
+/usr/bin/g++ -std=c++26 -Wall -Wextra cpp/tests/spike/cpp26_hello.cpp -o /tmp/cpp26_hello_apple
 /tmp/cpp26_hello_apple
 ```
 
