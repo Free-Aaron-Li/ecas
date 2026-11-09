@@ -1,0 +1,31 @@
+[Unit]
+# ECAS 流量计（FMC400）入库：rtu-live.jsonl → flow_reading
+#
+# 为什么常驻在宿主机、而不是塞进 rtu-master 容器：
+#   * rtu-master 容器是只读挂载（/app ro），改采集器代码要重建镜像；
+#   * 采集器每秒写一帧 JSONL，入库只需要「读文件 + INSERT」，独立进程失败也不影响采集；
+#   * 断点续读状态落在 /opt/ecas/flow/state.json，重启/断电后不会重扫 11 MB 日志。
+#
+# psql 走 `docker exec -i ecas-db psql -U ecas -d ecas`（容器内 socket trust），
+# 宿主机不需要装 psql，口令也不进命令行。
+Description=ECAS 流量计（FMC400）JSONL → flow_reading 入库
+Documentation=file:/opt/ecas/README.md
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ecas
+ExecStart=/usr/bin/python3 /opt/ecas/flow/flow_ingest.py \
+    --follow \
+    --jsonl /opt/ecas/rtu-master/logs/rtu-live.jsonl \
+    --state /opt/ecas/flow/state.json
+Restart=always
+RestartSec=5
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+
+[Install]
+WantedBy=multi-user.target

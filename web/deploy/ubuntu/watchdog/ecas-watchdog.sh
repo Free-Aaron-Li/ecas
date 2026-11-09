@@ -42,7 +42,7 @@ cd "$STACK_DIR" || { echo "❌ 找不到 $STACK_DIR" >&2; exit 2; }
 
 # 从 .env 取绑定地址/端口（root 可读；取不到就用默认）
 env_get() { sed -n "s/^$1=//p" "$STACK_DIR/.env" 2>/dev/null | tail -1; }
-BIND_IP=$(env_get BIND_IP); BIND_IP=${BIND_IP:-10.10.10.11}
+BIND_IP=$(env_get BIND_IP); BIND_IP=${BIND_IP:-127.0.0.1}   # 2026-10-26 起默认回环
 WEB_PORT=$(env_get ECAS_WEB_PORT); WEB_PORT=${WEB_PORT:-18080}
 NOTIFY_CMD=$(env_get WATCHDOG_NOTIFY_CMD)
 

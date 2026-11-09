@@ -87,10 +87,10 @@ services:
       # 前端产物：必须挂在 /srv/web/frontend/dist（后端按 parents[2] 找它）
       - ./frontend-dist:/srv/web/frontend/dist:ro
     ports:
-      # 只绑 mesh 地址：外面（公网/办公网）扫不到
+      # 只绑回环 127.0.0.1：叠加网其它成员 / 公网 / 办公网都到不了（2026-10-26 安全收口）
       # ⚠️ 目标机 0.0.0.0:8080 已被生产容器 side.base.apigateway 占用 ⇒ 测试栈用 18080
       #    BIND_IP 用 `:?` 强制要求：万一 .env 漏了，宁可起不来，也不许退化成 0.0.0.0 全开
-      - "${BIND_IP:?需要 BIND_IP（mesh 地址，如 10.10.10.11）}:${ECAS_WEB_PORT:-18080}:8000"
+      - "${BIND_IP:?需要 BIND_IP（回环 127.0.0.1；外部只经本机 SSH 隧道）}:${ECAS_WEB_PORT:-18080}:8000"
     depends_on:
       db: {condition: service_healthy}
     security_opt: ["no-new-privileges:true"]

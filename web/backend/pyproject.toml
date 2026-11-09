@@ -6,6 +6,10 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.141.1",
+    # 班次报表（/api/export/shifts）：xlsx 组装 + 曲线图 PNG 渲染。
+    # 两者只在班次报表链路上用到，CSV/KPI/看板接口不依赖它们。
+    "matplotlib>=3.11.0",
+    "openpyxl>=3.1.5",
     "psycopg[binary,pool]>=3.3.6",
     "pydantic-settings>=2.15.0",
     "uvicorn[standard]>=0.54.0",

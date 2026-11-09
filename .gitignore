@@ -99,3 +99,10 @@ web/backend/.env
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.uv-cache/
+
+# ── 本机临时 / 缓存（2026-11-09 基线整理）──
+.pnpm-store/
+.tmp-photos/
+.tmp-watch-conc*.sh
+.docx/

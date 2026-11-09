@@ -34,6 +34,10 @@ export function AlarmPanel({
   }, [alarms?.low, alarms?.high, alarms])
 
   const active = (page?.items ?? []).filter((e) => e.active)
+  // 先生 2026-11-04：报警表默认只显示最近 10 行（要看更早的，换班次/日期即可）
+  const ROWS = 10
+  const items = page?.items ?? []
+  const shown = items.slice(0, ROWS)
   const dirty = alarms ? Number(low) !== alarms.low || Number(high) !== alarms.high : false
 
   const run = async (kind: 'save' | 'reset' | 'scan') => {
@@ -43,7 +47,7 @@ export function AlarmPanel({
     try {
       if (kind === 'save') {
         const a = await saveAlarms(Number(low), Number(high))
-        setMsg(`已保存：${fmtNum(a.low, 1)} ~ ${fmtNum(a.high, 1)} 浓度（raw ${a.low_raw} ~ ${a.high_raw}）`)
+        setMsg(`已保存：${fmtNum(a.low, 1)} ~ ${fmtNum(a.high, 1)} 浓度`)
       } else if (kind === 'reset') {
         const a = await resetAlarms()
         setMsg(`已恢复出厂默认：${fmtNum(a.low, 1)} ~ ${fmtNum(a.high, 1)} 浓度`)
@@ -63,20 +67,21 @@ export function AlarmPanel({
     <section className="card">
       <div className="chart-head">
         <h2 className="card-title" style={{ margin: 0 }}>
-          报警（规则跑在后端）
+          报警
         </h2>
         <span className="hint">
-          当前用{alarms?.custom ? '自定义' : '出厂默认'}值：{fmtNum(alarms?.low, 1)} ~ {fmtNum(alarms?.high, 1)} 浓度
+          {/* 上下限目前只有浓度计有（流量计没有阈值），所以这里必须写明口径 */}
+          阈值仅用于浓度计 ｜ 当前用{alarms?.custom ? '自定义' : '出厂默认'}值：
+          {fmtNum(alarms?.low, 1)} ~ {fmtNum(alarms?.high, 1)} 浓度
           {alarms?.custom && alarms.default_low != null
             ? `（默认 ${fmtNum(alarms.default_low, 1)} ~ ${fmtNum(alarms.default_high, 1)}）`
             : ''}
-          ｜ raw 判据 {alarms?.low_raw ?? '—'} ~ {alarms?.high_raw ?? '—'}
         </span>
       </div>
 
       <div className="alarm-form">
         <label>
-          <span>下限（低于它报警 · 红）</span>
+          <span>浓度报警下限（低于它报警 · 红）</span>
           <input
             type="number"
             step="0.1"
@@ -88,7 +93,7 @@ export function AlarmPanel({
           />
         </label>
         <label>
-          <span>上限（高于它报警 · 黄）</span>
+          <span>浓度报警上限（高于它报警 · 黄）</span>
           <input
             type="number"
             step="0.1"
@@ -133,7 +138,7 @@ export function AlarmPanel({
           <span className="hint">当前没有进行中的报警</span>
         )}
         <span className="hint">
-          {page?.scan ? `最近一次扫描：${describeScan(page.scan)}` : '后端尚未扫描过'}
+          {page?.scan ? `最近一次扫描：${describeScan(page.scan)}` : '尚未扫描过'}
         </span>
       </div>
 
@@ -145,27 +150,26 @@ export function AlarmPanel({
               <th>种类</th>
               <th>级别</th>
               <th>持续</th>
-              <th className="num">峰值 raw</th>
               <th className="num">峰值浓度</th>
               <th className="num">行数</th>
               <th>状态</th>
             </tr>
           </thead>
           <tbody>
-            {(page?.items ?? []).map((e) => (
+            {shown.map((e) => (
               <tr key={e.id} className={e.active ? 'row-alarm' : undefined}>
                 <td data-label="开始时间">{fmtDateTime(e.started_ts)}</td>
                 <td data-label="种类">
                   {e.kind_label}
-                  {e.note ? <span className="hint"> {e.note}</span> : null}
+                  {/* 浓度越限的数值看「峰值浓度」列；note 只给断流/断线/超量程做补充说明 */}
+                  {e.note && e.kind !== 'conc_high' && e.kind !== 'conc_low' ? (
+                    <span className="hint"> {e.note}</span>
+                  ) : null}
                 </td>
                 <td data-label="级别" className={e.level === '严重' ? 'alarm-low' : 'alarm-high'}>
                   {e.level}
                 </td>
                 <td data-label="持续">{fmtDuration(e.duration_seconds)}</td>
-                <td data-label="峰值 raw" className="num">
-                  {e.peak_raw ?? '—'}
-                </td>
                 <td data-label="峰值浓度" className="num">
                   {fmtNum(e.peak_conc, 2)}
                 </td>
@@ -177,9 +181,9 @@ export function AlarmPanel({
                 </td>
               </tr>
             ))}
-            {!(page?.items ?? []).length && (
+            {!items.length && (
               <tr className="empty">
-                <td colSpan={8} className="hint">
+                <td colSpan={7} className="hint">
                   {windowLabel}没有报警记录
                 </td>
               </tr>
@@ -187,6 +191,10 @@ export function AlarmPanel({
           </tbody>
         </table>
       </div>
+
+      {items.length > ROWS && (
+        <span className="hint">仅显示最近 {ROWS} 条（本班共 {items.length} 条）</span>
+      )}
     </section>
   )
 }

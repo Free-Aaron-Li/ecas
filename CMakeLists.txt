@@ -1,51 +1,41 @@
 ################################################################################
-# ECAS (Energy Consumption Acquisition System) 根配置文件
-# 负责项目全局设置、依赖管理、Doxygen 文档配置及子目录包含
+# ECAS (Edge-Cloud Acquisition System) 顶层构建配置
+# 负责项目全局设置、子目录包含与 Doxygen 文档配置
 ################################################################################
-
-###############
-# 全局配置参数
-# 主要目的：指定第三方软件包管理工具 vcpkg 的配置文件路径，及指定编译器
-#-DCMAKE_TOOLCHAIN_FILE=/Users/lijc/.vcpkg-clion/vcpkg/scripts/buildsystems/vcpkg.cmake
-#-DVCPKG_TARGET_TRIPLET=arm64-osx-gcc16
-#-DVCPKG_HOST_TRIPLET=arm64-osx-gcc16
-#-DVCPKG_OVERLAY_TRIPLETS=/Users/lijc/.vcpkg-overlay-triplets
-###############
 
 # 1. CMake 配置
 # 1.1 最低 CMake 版本要求
+# 2026-10-13 先生令：进行中的项目一律用最新版 CMake（本机 4.4.4）并合理利用其特性。
+#   本工程目前只在 Mac 上配置（g++-16 / Ninja）；已实测 4.4.4 下配置、构建、ctest 全通过。
+#   云端 ecas 主机（cmake 3.26.5）只跑部署、不配置本工程（deploy/ 仍是占位）。
 cmake_minimum_required(VERSION 4.4)
 # 1.2 生成编译命令，用于第三方软件识别
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# 2. 项目名称，版本号，支持语言
-# 项目全称：Energy consumption acquisition system
-project(ecas VERSION 0.0.0 LANGUAGES C CXX)
+# 2. 项目名称、版本号、支持语言
+project(ecas VERSION 0.0.1 LANGUAGES C CXX)
 
-# 3. C++ 标准说明
-set(CMAKE_CXX_STANDARD 23)
-
-# 4. 强制编译器支持 C++ 标准
+# 3. C++ 标准：C++26（GCC 16.2 主战场 / Clang 24 对标 / MSVC 暂不考虑）
+set(CMAKE_CXX_STANDARD 26)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-# 5. 禁用编译器扩展
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# 6. 开启 C++20 模块扫描
-set(CMAKE_CXX_SCAN_FOR_MODULES ON)
-# 6.1 开启 Qt 自动处理功能 (MOC, RCC, UIC) 全局开启
-#set(CMAKE_AUTOMOC ON)
-#set(CMAKE_AUTORCC ON)
-#set(CMAKE_AUTOUIC ON)
+# 4. C++20/26 模块扫描
+# 计划决策：Modules 降级为可选（GCC 16 模块仍标 experimental），
+# 阶段 0 以「命名空间 + 头文件分层」为主。若启用 Modules（.cppm），
+# 需使用 Ninja 生成器并将本开关置 ON。
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
-# 7.1 确定可执行文件位置（项目顶层）
+# 5. 可执行文件输出位置（项目顶层 bin/）
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/../bin)
-# 7.2 Qt 查找路径配置
-set(CMAKE_PREFIX_PATH "/Users/lijc/env/qt/6.11.1/macos")
-# 7.3. 第三方插件
-find_package(date CONFIG REQUIRED)
-find_package(pugixml CONFIG REQUIRED)
-find_package(Catch2 CONFIG REQUIRED)
+
+# 6. Qt 查找路径配置（启用 L8 UI 层时使用）
+if (DEFINED ENV{QT_ROOT})
+    list(APPEND CMAKE_PREFIX_PATH "$ENV{QT_ROOT}")
+endif ()
+
+# 7. 全局编译选项：警告全开（-Werror 由 CI 门禁在 GCC 16.2 主战场启用）
+add_compile_options(-Wall -Wextra -Wpedantic)
 
 # 8. Doxygen 文档生成配置
 # 是否生成 Doxygen 文档
@@ -74,8 +64,7 @@ if (ENABLE_DOXYGEN)
         endif ()
 
         # 定义输入模板和输出配置文件的路径
-        # Doxyfile.in 是模板，Doxyfile 是 CMake 运行后生成的实际配置文件
-        set(DOXYFILE_IN ${CMAKE_CURRENT_SOURCE_DIR}/doxygen_tools/Doxyfile.in)
+        set(DOXYFILE_IN ${CMAKE_CURRENT_SOURCE_DIR}/scripts/doxygen_tools/Doxyfile.in)
         set(DOXYFILE_OUT ${CMAKE_CURRENT_BINARY_DIR}/Doxyfile)
 
         if (EXISTS ${DOXYFILE_IN})
@@ -83,17 +72,15 @@ if (ENABLE_DOXYGEN)
             set(DOXYGEN_OUTPUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/doxygen")
 
             # 使用 configure_file 在 CMake 配置阶段自动生成 Doxyfile
-            # 它会将模板中的 @PROJECT_VERSION@ 等变量替换为当前项目的实际值
             configure_file(${DOXYFILE_IN} ${DOXYFILE_OUT} @ONLY)
 
-            # 根据开关决定是否将 doc 设为 ALL (即每次构建都自动运行)
+            # 根据开关决定是否将 docs 设为 ALL (即每次构建都自动运行)
             set(doc_opt "")
             if (ENABLE_DOXYGEN_AUTO_UPDATE)
                 set(doc_opt ALL)
             endif ()
 
-            # 添加一个自定义目标 'doc'
-            # 确保输出目录存在，并在正确的目录下执行 Doxygen
+            # 添加一个自定义目标 'docs'
             add_custom_target(doc ${doc_opt}
                     COMMAND ${CMAKE_COMMAND} -E make_directory "${DOXYGEN_OUTPUT_DIR}"
                     COMMAND ${DOXYGEN_EXECUTABLE} "${DOXYFILE_OUT}"
@@ -110,7 +97,7 @@ else ()
     message(STATUS "Doxygen 功能已被手动关闭")
 endif ()
 
-# 9. 包含子项目
-add_subdirectory(foundation)
-add_subdirectory(acquisition)
-add_subdirectory(application)
+# 9. 包含子项目（重构后的分层结构：L1–L8 单向依赖）
+enable_testing()
+add_subdirectory(src)
+add_subdirectory(tests)

@@ -10,6 +10,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from . import flow
 from .convert import convert
 
 
@@ -32,7 +33,14 @@ class ReadingsPage(BaseModel):
     end: datetime | None = None
     limit: int
     offset: int
+    #: 本次**返回**的行数（= `items` 长度）
     count: int
+    #: 窗口内的**总**行数 —— `count < rows_total` 表示被 limit 截断或抽样过
+    rows_total: int = 0
+    #: 触发 `sample=auto` 抽样：`items` 是**整窗均匀**的真实读数，而不是"最新 limit 条"
+    sampled: bool = False
+    #: 抽样时一个时间桶的宽度（秒）= 窗口时长 / limit，前端据此说明"多久一个点"
+    bucket_seconds: float | None = None
     items: list[Reading]
 
 
@@ -134,3 +142,102 @@ class AuthInfo(BaseModel):
 def to_reading(row: dict[str, Any], s: Any) -> Reading:
     """库行（ts/model/raw）+ 换算 → Reading。"""
     return Reading(ts=row["ts"], model=row["model"], **convert(int(row["raw"]), s))
+
+
+# —— 电磁流量计（FMC400）——
+#
+# 与浓度计同一原则：库里只存原始寄存器，换算一律在这里给出。
+# 寄存器块用 `integer[]` 原样存，`flow.decode()` 负责拼 32 位、除以倍率、判状态。
+
+
+class FlowReading(BaseModel):
+    """一行流量读数：14 个寄存器原样 + 后端解码结果。"""
+
+    ts: datetime
+    model: str
+    regs: list[int] = Field(description="寄存器 0~13 原样（便于对账：任何解码都能用原始值复核）")
+    velocity_mps: float = Field(description="流速 m/s = s32(r0,r1) / 1000")
+    flow_m3h: float = Field(description="瞬时流量 m³/h = s32(r2,r3) / 100（负数=反流）")
+    percent: float = Field(description="流量百分比 % = r4 / 100")
+    empty_pipe_pct: float = Field(description="空管百分比 % = r5 / 100（≥50 判空管）")
+    total_m3: int = Field(description="正向累积 m³ = u32(r6,r7)，32 位会回绕")
+    reverse_total_m3: int = Field(description="反向累积 m³ = u32(r8,r9)")
+    alarm: int = Field(description="报警位原值（位掩码）")
+    alarm_labels: list[str] = Field(description="报警位翻译成中文（认不出的位给十六进制）")
+    direction: int = Field(description="流向原值：0=反向，1=正向")
+    direction_label: str
+    status: str = Field(description="正常 / 空管 / 反流 / 报警")
+
+
+class FlowPage(BaseModel):
+    """`/api/flow/readings` 的分页结果（形状与浓度计 ReadingsPage 对齐）。"""
+
+    hours: int
+    start: datetime | None = None
+    end: datetime | None = None
+    limit: int
+    offset: int
+    count: int
+    rows_total: int = 0
+    sampled: bool = False
+    bucket_seconds: float | None = None
+    items: list[FlowReading]
+
+
+class FlowSummary(BaseModel):
+    """区间统计：均值/极值只统计**本次窗口内的行**（空管/反流也计入流量均值，它们仍是读数）。"""
+
+    hours: int
+    start: datetime | None = None
+    end: datetime | None = None
+    n: int
+    n_empty_pipe: int = 0
+    n_reverse: int = 0
+    n_alarm: int = 0
+    flow_avg: float | None = None
+    flow_min: float | None = None
+    flow_max: float | None = None
+    velocity_avg: float | None = None
+    velocity_max: float | None = None
+    empty_pipe_avg: float | None = None
+    percent_avg: float | None = None
+    #: 区间首/末的累积量（m³，原值）；`total_delta` 在末值 < 首值（回绕/清零）时为 null
+    total_first: int | None = None
+    total_last: int | None = None
+    total_delta: int | None = None
+
+
+class FlowLatest(BaseModel):
+    """最新一条流量读数 + 新鲜度。`available=false` 表示库里还没有流量行（采集未接入）。"""
+
+    model: str
+    available: bool
+    rows_total: int = 0
+    last_ts: datetime | None = None
+    age_seconds: float | None = None
+    stale: bool = True
+    reading: FlowReading | None = None
+
+
+class FlowParams(BaseModel):
+    """流量计口径说明（前端据此写单位、脚注；解码公式改了这里不用改前端）。"""
+
+    model: str
+    register_count: int
+    units: dict[str, str]
+    registers: list[dict[str, Any]]
+    statuses: list[str]
+    alarm_bits: list[dict[str, str]]
+    stale_seconds: int
+    formula: dict[str, str]
+    note: str
+
+
+def to_flow_reading(row: dict[str, Any]) -> FlowReading:
+    """库行（ts/model/regs）+ 解码 → FlowReading。"""
+    return FlowReading(
+        ts=row["ts"],
+        model=row["model"],
+        regs=[int(v) for v in row["regs"]],
+        **flow.decode(row["regs"]),
+    )

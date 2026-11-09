@@ -103,6 +103,24 @@ DTU 侧支持 TLS 后撤掉明文口（根治）。
 | `mqtt-relay/*`、`deploy-cloud-mqtt-relay.sh` | MQTT 转发机（见上） |
 | `tighten-security-group.py` | 腾讯云**安全组**收口（TC3 签名，纯标准库）：`show`/`plan` 只读，`apply --confirm` 才写并自动备份原规则；密钥只从环境变量读 |
 
+## 二·补、Cloudflare Worker 网关（当前唯一入口，2026-09-29 策略更新）
+
+公网唯一入口是 Worker `gateway`（`https://gateway.xshky.org`），**源码不在本仓库**：
+`~/.files/dsh/ecas-gateway/`（`src/worker.js` + `wrangler.jsonc`），经 Workers VPC 直达 `10.10.10.11:18080`，
+**不经过本机公网**。云端 nginx 只做 `301 → gateway.xshky.org`（见上）。
+
+2026-09-29 的策略与限速改动：
+
+- **只读接口免维护**：`/api/` 前缀下的 `GET`/`HEAD` 一律放行 ⇒ 后端新增**只读**接口
+  **不用改 Worker、也不用重新部署**（此前每加一个接口都要手工登记 `API_ROUTES`，漏了就 403 ——
+  2026-09-29 的 `/api/shifts` 就是这么挂的）。
+  **不变式**：写方法（POST/PUT/PATCH/DELETE）**永远必须显式登记**（忘同步只 403，不会变成写入漏洞）。
+- **WebSocket 收敛**：独立 `WS_ROUTES = {'/ws/readings'}`（旧实现里任何登记了 `GET` 的接口都能被 WS 升级）。
+- **`/internal/*` 一律 403**。
+- **登录限速**：`rl:<ip>` + `rlu:<用户名>` 双键 + 失败渐进延迟（不依赖 KV 的最终一致性）。
+
+部署 / 线上验收 / 回滚的完整判据见 `docs/ECAS部署与踩坑手册.md` §5.12。
+
 ## 三、历史备注（仍然有效）
 
 1. **安全组**要在腾讯云控制台放行 `80`/`443`（脚本改不了）；云端 `firewalld` 未运行，不需要额外放行。

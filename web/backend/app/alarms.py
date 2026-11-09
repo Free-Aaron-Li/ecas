@@ -419,13 +419,13 @@ def evaluate(pool: ConnectionPool, settings: Any, now: datetime | None = None) -
 
 
 def _note(kind: str, state: dict[str, Any], alarms: dict[str, Any], settings: Any) -> str:
+    """事件的一句话说明：只说**人看得懂的物理量**（浓度 / 电流），不把 raw 计数摆到页面上。"""
     peak = state["peak_raw"]
-    if kind == CONC_HIGH:
-        return f"浓度 {convert.raw_to_conc(peak, settings)} 高于上限 {alarms['high']}（raw {peak}）"
-    if kind == CONC_LOW:
-        return f"浓度 {convert.raw_to_conc(peak, settings)} 低于下限 {alarms['low']}（raw {peak}）"
+    if kind in (CONC_HIGH, CONC_LOW):
+        # 浓度越限的数值在表格「峰值浓度 / 级别」两列已经说清，再写一遍只是重复
+        return ""
     if kind == BREAK:
-        return f"raw {peak} 低于断线判据 {settings.break_low}（电流 {convert.raw_to_ma(peak)} mA）"
+        return f"电流 {convert.raw_to_ma(peak):.3f} mA 低于断线判据 {settings.break_low / 1000:.1f} mA"
     if kind == OVER:
-        return f"raw {peak} 高于超量程判据 {settings.over_high}（电流 {convert.raw_to_ma(peak)} mA）"
+        return f"电流 {convert.raw_to_ma(peak):.3f} mA 高于超量程判据 {settings.over_high / 1000:.1f} mA"
     return ""

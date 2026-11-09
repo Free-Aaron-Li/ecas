@@ -47,7 +47,8 @@ def test_根路径按前端产物是否存在分流(client: TestClient) -> None:
     assert resp.status_code == 200
     if (DIST_DIR / "index.html").exists():
         assert resp.headers["content-type"].startswith("text/html")
-        assert "ECAS" in resp.text
+        # 标题 2026-11-04 起叫「浓度监测」（先生要求），不再带 ECAS 字样
+        assert "浓度监测" in resp.text
     else:
         assert resp.json()["service"] == "ecas-backend"
 

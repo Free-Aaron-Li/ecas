@@ -69,10 +69,13 @@ DDL = (
         created_at    timestamptz NOT NULL DEFAULT now(),
         updated_at    timestamptz NOT NULL DEFAULT now(),
         last_login_at timestamptz,
+        display_name  text,
         CONSTRAINT web_account_role_chk CHECK (role IN ('admin', 'user'))
     )
     """,
     "CREATE INDEX IF NOT EXISTS web_account_role_idx ON web_account (role)",
+    # 2026-11-04：网页上要显示「是谁登录的」，中文姓名单独一列（用户名仍保持小写 ASCII 主键）
+    "ALTER TABLE web_account ADD COLUMN IF NOT EXISTS display_name text",
 )
 
 
@@ -113,7 +116,7 @@ def password_ok(row: dict[str, Any], password: str) -> bool:
 #: 对外（网关）能看到的字段：**没有 salt/hash**
 PUBLIC_COLS = (
     "username, role, disabled, must_change, algo, iter, se, "
-    "created_at, updated_at, last_login_at"
+    "created_at, updated_at, last_login_at, display_name"
 )
 
 
@@ -140,6 +143,7 @@ def public(row: dict[str, Any] | None) -> dict[str, Any] | None:
         "created_at": _iso(row.get("created_at")),
         "updated_at": _iso(row.get("updated_at")),
         "last_login_at": _iso(row.get("last_login_at")),
+        "display_name": row.get("display_name"),
     }
 
 
@@ -147,7 +151,8 @@ def get(pool: ConnectionPool, username: str) -> dict[str, Any] | None:
     """取**完整**记录（含 salt/hash）——只在校验口令/改密时用，不外传。"""
     return db.fetch_one(
         pool,
-        "SELECT username, role, disabled, must_change, algo, iter, salt, hash, se, created_at, updated_at, last_login_at"
+        "SELECT username, role, disabled, must_change, algo, iter, salt, hash, se, created_at, updated_at,"
+        "       last_login_at, display_name"
         "  FROM web_account WHERE username = %(u)s",
         {"u": username},
     )
@@ -181,6 +186,7 @@ def create(
     role: str = "user",
     must_change: bool = False,
     se: int = 1,
+    display_name: str | None = None,
 ) -> dict[str, Any]:
     """新建账户（已存在则 409）。"""
     username = check_username(normalize(username))
@@ -191,8 +197,9 @@ def create(
     row = db.execute(
         pool,
         """
-        INSERT INTO web_account (username, role, disabled, must_change, algo, iter, salt, hash, se)
-        VALUES (%(u)s, %(role)s, false, %(must)s, %(algo)s, %(iter)s, %(salt)s, %(hash)s, %(se)s)
+        INSERT INTO web_account
+               (username, role, disabled, must_change, algo, iter, salt, hash, se, display_name)
+        VALUES (%(u)s, %(role)s, false, %(must)s, %(algo)s, %(iter)s, %(salt)s, %(hash)s, %(se)s, %(dn)s)
         RETURNING username
         """,
         {
@@ -200,6 +207,7 @@ def create(
             "role": "admin" if role == "admin" else "user",
             "must": bool(must_change),
             "se": int(se),
+            "dn": (display_name or "").strip() or None,
             **cred,
         },
     )
@@ -308,6 +316,9 @@ def patch(pool: ConnectionPool, username: str, **fields: Any) -> dict[str, Any]:
         role = "admin" if fields["role"] == "admin" else "user"
         sets.append("role = %(role)s")
         params["role"] = role
+    if "display_name" in fields and fields["display_name"] is not None:
+        sets.append("display_name = %(dn)s")
+        params["dn"] = str(fields["display_name"]).strip() or None
     if not sets:
         raise HTTPException(400, "没有要改的字段")
     sets.append("updated_at = now()")
@@ -351,6 +362,7 @@ class CreateBody(BaseModel):
     role: str = "user"
     must_change: bool = False
     se: int = 1
+    display_name: str | None = None
 
 
 class ImportBody(BaseModel):
@@ -372,6 +384,7 @@ class PatchBody(BaseModel):
     disabled: bool | None = None
     must_change: bool | None = None
     role: str | None = None
+    display_name: str | None = None
 
 
 router = APIRouter(prefix="/internal/accounts", tags=["accounts"])
@@ -397,6 +410,7 @@ def api_create(request: Request, body: CreateBody) -> dict[str, Any]:
         role=body.role,
         must_change=body.must_change,
         se=body.se,
+        display_name=body.display_name,
     )
     return {"account": account}
 

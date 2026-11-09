@@ -1,7 +1,9 @@
 # ECAS · Ubuntu Super Server 测试栈（A 方案：Docker Compose）
 
 把「采集 → 后端 → 看板」整套搬到 **10.10.10.11（ubuntu-super，easytier mesh 内）**，三容器 + systemd 自启。
-只绑 mesh 地址，公网/办公网都到不了。详细背景与踩坑见 [[ECAS部署与踩坑手册]] §5.7。
+**2026-11-04 起恢复外网访问（带账户层）**：绑定 `10.10.10.11:18080`，外网只经 Cloudflare Worker
+`gateway.xshky.org`（登录 → 8 个账户 → 设备数限制 + 单点在线）进来；叠加网直连虽然可达，但接口仍要令牌。
+本机 SSH 隧道（launchd `com.ecas.tunnel`）作为旁路保留。详细背景见下方「访问入口」。
 
 > **2026-09-26 架构切换（ADR 18）**：云端退居中转（只留 mosquitto + easytier + nginx 边缘），
 > **数据库与前后端的唯一权威副本就在这台机**。云端历史 783 条已补全到这里并 md5 对账一致。
@@ -78,7 +80,8 @@ ssh ubuntu-super 'sudo STALE_MIN=0 /opt/ecas/watchdog/ecas-watchdog.sh'   # 立�
 ## 三件容易踩的事
 
 1. **端口 18080，不是 8080**：这台是生产机，`0.0.0.0:8080` 被 `side.base.apigateway` 占用。
-   compose 用 `${BIND_IP:?...}:${ECAS_WEB_PORT:-18080}:8000`，`BIND_IP` 缺失时**故意启动失败**，防止退化成 0.0.0.0。
+   compose 用 `${BIND_IP:?...}:${ECAS_WEB_PORT:-18080}:8000`，现值为 **`127.0.0.1`**（2026-10-26 收口，不是 mesh 地址），
+   `BIND_IP` 缺失时**故意启动失败**，防止退化成 0.0.0.0。
 2. **采集器走 mesh 连云端**：8884 **未放行腾讯云安全组**（云端配置：「公网不可达，仅作就绪备用」），
    而 `server.crt` 的 SAN 里**没有** mesh 地址 `10.10.10.123` ⇒ 用「CA 链校验 + leaf 证书 SHA-256 指纹钉扎」
    替代主机名校验（`MQTT_CERT_SHA256`）。**云端重签 `server.crt` 后必须更新这个值**，否则采集器 fail closed 拒绝订阅：
@@ -89,6 +92,35 @@ ssh ubuntu-super 'sudo STALE_MIN=0 /opt/ecas/watchdog/ecas-watchdog.sh'   # 立�
    ```
 3. **`ssh host 'sudo bash -s'` 喂进来的脚本里，`docker compose exec -T` 要加 `< /dev/null`**：
    否则 exec 会把后续脚本流当自己的 stdin 吃掉，后面几条命令静默不执行。
+
+## 访问入口（2026-10-26 安全收口）
+
+先生令：网站只允许先生本人这台 Mac 访问，其他一律禁止。落地方式：
+
+| 层 | 2026-11-04 起的状态 |
+| --- | --- |
+| 后端绑定 | `10.10.10.11:18080`（`/opt/ecas/.env` 的 `BIND_IP`；VPC 隧道要能到，改回 127.0.0.1 会切断外网） |
+| 公网域名 | Cloudflare Worker `gateway`（`~/.files/dsh/ecas-gateway/src/worker.js`）：登录 + 8 个账户 + 设备台账 |
+| 账户规则 | 普通账户最多 5 台设备、`admin` 只 1 台；同一账户同一时间只允许 1 台在线，后登录的把前面顶下线并提示 |
+| VPC 隧道 | `cloudflared` 容器（`docker start cloudflared`，已改为 `restart=on-failure`） |
+| 本机入口 | launchd `com.ecas.tunnel`（`ssh -N -L 18080:127.0.0.1:18080 ubuntu-super`）仍可用作旁路 |
+| 叠加网直连 | 可达，但后端接口仍要令牌（网关注入），直连会落令牌门 |
+| 腾讯云边缘 | `ecas-edge`（80/443）仍 stopped + `restart=no` |
+
+验收：
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:18080/healthz      # 200（经本机隧道）
+curl -sS -o /dev/null -w '%{http_code}\n' http://10.10.10.11:18080/healthz    # 200（VPC 用这条）
+curl -sS -o /dev/null -w '%{http_code}\n' https://gateway.xshky.org/          # 401（未登录，JSON）
+curl -sS -o /dev/null -w '%{http_code}\n' https://gateway.xshky.org/login     # 200
+```
+
+- 回滚到「只允许本机」（2026-10-26 形态）：`BIND_IP=127.0.0.1` 重建 api + `docker stop cloudflared` +
+  把 `~/.files/dsh/ecas-gateway/wrangler.jsonc` 的 `main` 指回 `src/lockdown.js` 再 `npx wrangler deploy`。
+- `.env` 模板里的 `BIND_IP` 仍写 `127.0.0.1`（安全默认）；外网形态要显式改成 `10.10.10.11`，
+  且 `deploy.sh push` 已改为**不覆盖目标机 `.env`**，重跑部署不会把它改回去。
+- 完整记录与回滚清单：`docs/安全收口-2026-10-26.md`。
 
 ## 凭据
 

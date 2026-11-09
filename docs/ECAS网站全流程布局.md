@@ -16,9 +16,9 @@ flowchart LR
   C -->|"TLS 8884，经叠加网 10.10.10.123<br/>叶子证书指纹钉扎"| D["ecas-collector<br/>mqtt_tls_feeder.py → dpro66_monitor.sh --pipe"]
   D -->|"唯一写入者"| E[("PostgreSQL 16<br/>raw_reading")]
   E -->|"只读"| F["ecas-api（FastAPI）<br/>/api/*　/ws/readings　静态站"]
-  F --> G["nginx ecas-edge（腾讯云）<br/>10.10.10.11:18080"]
+  F --> G["nginx ecas-edge（腾讯云）<br/>（2026-10-26 起已停用）"]
   G --> H["浏览器 SPA"]
-  I["Cloudflare Worker gateway<br/>gateway.xshky.org"] -->|"账户/会话 + VPC 绑定"| F
+  I["Cloudflare Worker gateway<br/>（2026-10-26 起 403 封锁桩）"] -.->|"已切断"| F
   H -.->|"登录后走账户层"| I
 ```
 
@@ -38,6 +38,7 @@ flowchart LR
 | 3 | **浓度趋势** | `App.tsx:218` + `TrendChart.tsx` | 卡片头：**报警线 开/关**、**导出 CSV（N 小时）**、**时间区间 tabs**（`1 小时 / 24 小时 / 7 天 / 30 天`，默认 24）；图体 `ResponsiveContainer > AreaChart`，Area 绿色、断线点不画，三条 `ReferenceLine`（上限/下限/均值），悬停 `ChartTooltip` |
 | 4 | **报警事件** | `AlarmPanel.tsx` | 阈值表单（下限/上限 → **保存 / 恢复默认 / 立即扫描**，阈值存后端 `alarm_config` 表）+ 扫描摘要（`最近一次扫描: 新开 N ｜ 关闭 N ｜ 本次看 M 行`）+ 表格 **8 列**：开始时间/种类/级别/持续/峰值 raw/峰值浓度/行数/状态 |
 | 5 | **最近读数** | `App.tsx:262` + `RecentTable.tsx` | 卡片头：`越限判据：40.0 ~ 70.0 浓度（raw 10323 ~ 15123）`；表格 **6 列**：时间/原始值/电流 mA/未补偿/浓度/状态，最多 **25** 行（`TABLE_ROWS`） |
+| 6 | **班次报表（Excel）** | `ShiftExport.tsx` | 选日期范围 + 班次类型（白班 / 夜班，默认全选），先预览「共 N 个班次」；导出时单班 → `.xlsx`、多班 → `.zip`。每份含 元信息／班末读数／区间统计／**曲线图**／报警事件 ＋ `读数明细` 第二张表；上限 31 天 / 62 班 |
 | — | **页脚** `App.tsx:275` | 内置 | 换算口径公式、未补偿公式、报警阈值（含“看板自定义/出厂默认”）、断线 `raw < 3600`、超量程 `raw > 20500`、断流阈值 `600 秒`、`30 秒自动刷新 + WebSocket 实时推送` |
 
 > 桌面端两张表都是常规 `<table>`；**窄屏（≤640px）自动变成卡片**，每个数值前面带字段名（详见 §5）。
@@ -54,6 +55,7 @@ flowchart LR
 | 改报警阈值 | 保存 / 恢复默认 | `PUT|DELETE /api/alarms/config` 后调 `onChanged()` 让整页重取 |
 | 手动扫描 | 立即扫描 | `POST /api/alarms/scan`，回显新开/关闭条数 |
 | 导出 CSV | `<a download href={exportCsvUrl(hours)}>` | 令牌只能走查询串 `/api/export.csv?hours=N&token=…`（`<a>` 带不了请求头） |
+| 导出班次报表 | `ShiftExport` 卡片里选日期 + 班次类型 | **独立于 `hours`**：不跟随时间区间 tabs（班次按自然日切，跟随 `hours` 会把半个班次也切进来）；同样只能走 `?token=` |
 | 鉴权 | 令牌存 `localStorage.ecas_token`（`api.ts:111`） | 每个 `fetch` 加 `Authorization`；经网关时是 Worker 注入的**占位符** |
 
 ---
@@ -72,11 +74,15 @@ flowchart LR
 | `/api/alarms/config` | PUT / DELETE | 自定义阈值 / 恢复出厂默认 | 有 |
 | `/api/alarms/scan` | POST | 立即扫描一次 | 有 |
 | `/api/export.csv?hours=` | GET | 导出 CSV | 有（`?token=`） |
+| `/api/shifts?start=&end=&kinds=` | GET | 班次清单预览（白班 08:00–20:00 / 夜班 20:00–次日 08:00，只算时间不查数据） | 有 |
+| `/api/export/shifts?start=&end=&kinds=` | GET | 按班次导出 Excel（单班 `.xlsx` / 多班 `.zip`，含 matplotlib 曲线图） | 有（`?token=`） |
 | `/ws/readings` | WS | 新读数推送 | 有（`?token=`） |
-| `/login` `/logout` `/password` `/api/session` `/admin/accounts[.json]` | — | **账户层（Cloudflare Worker）**：登录/改密/会话/账户管理 | 会话 cookie `dm_session` |
+| `/internal/accounts*` | GET / POST / PATCH / DELETE | **后端内部账户接口**（前缀 `/internal/accounts`，`accounts.py:377`）：建号 / 改密 / 导入 / 校验 / 启停。⚠️ 用的是**另一个专用令牌** `ECAS_INTERNAL_TOKEN`，与看板令牌分开（安全审查 M-02） | 有（内部令牌） |
+| `/login` `/logout` `/password` `/api/session` `/admin/accounts[.json]` | — | **账户层（Cloudflare Worker）**：登录/改密/会话/账户管理。Worker 再以内部令牌转发到上面的 `/internal/accounts*` | 会话 cookie `dm_session` |
 
-⚠️ 静态站挂载 `app.mount("/", StaticFiles(...))` 在**所有 API 之后**注册（`main.py:493`），否则会把接口吞掉。
-⚠️ **后端容器真实端口是 8000**（`ECAS_PORT=8000`）；本地开发栈用 8080，腾讯云上另有一份旧 `ecas-web` 只绑 `127.0.0.1:8080`（走 SSH 隧道访问，与容器无关）。
+⚠️ 静态站挂载 `app.mount("/", StaticFiles(...))` 在**所有 API 之后**注册（`main.py:698`，对应的警示注释在 `main.py:260`），否则会把接口吞掉。
+⚠️ **后端容器监听 `8000`**（`ECAS_PORT=8000`）。现网由 compose 映射为 **`127.0.0.1:18080 → 8000`**（`docker-compose.yml:93`；2026-10-26 安全收口后只绑回环，叠加网/公网都到不了，仅先生本机 SSH 隧道可达）；本地开发栈直接跑 `8080`。⚠️ 腾讯云那台机器上的旧 `ecas-web`（`127.0.0.1:8080`）**已不是现网** —— 其单元已是 `disabled` + `inactive (dead)`，见 [`云端部署.md`](./云端部署.md) 顶部横幅。
+⚠️ `/docs`、`/redoc`、`/openapi.json` 默认**关闭**（安全审查 M-01）；临时要看设 `ECAS_ENABLE_DOCS=1`。
 
 ---
 
@@ -115,7 +121,7 @@ flowchart LR
                                           │  账户/会话（web_account），登录限速存 CF KV
                                           │  VPC 服务绑定 ECAS_API（URL 必须写目标 host:port）
                                           ▼
-                                    10.10.10.11:18080（叠加网，仅内网可达）
+                                    127.0.0.1:18080（仅本机 SSH 隧道可达；2026-10-26 收口）
                                           ▲
    腾讯云 nginx `ecas-edge`（80/443）──────┘   反代到同一地址（境外/直连入口）
 ```
@@ -125,13 +131,13 @@ flowchart LR
 | 服务 | 镜像 | 端口 / 卷 | 关键点 |
 |---|---|---|---|
 | `db` | `postgres:16-alpine` | 数据放 `/data/ecas/pgdata`（44T 数据盘）；`sql/001_init.sql` 仅首次初始化时执行 | 健康检查 `pg_isready`，api/collector 等它就绪 |
-| `api` | `ecas-api:local`（构建自 `./backend`） | `10.10.10.11:18080 → 8000`；`./frontend-dist:/srv/web/frontend/dist:ro` | `read_only: true` + tmpfs；DSN 不含口令（走 PGPASSFILE）；`AUTH_TOKEN_FILE` 指向容器 secret |
+| `api` | `ecas-api:local`（构建自 `./backend`） | `127.0.0.1:18080 → 8000`（2026-10-26 收口）；`./frontend-dist:/srv/web/frontend/dist:ro` | `read_only: true` + tmpfs；DSN 不含口令（走 PGPASSFILE）；`AUTH_TOKEN_FILE` 指向容器 secret |
 | `collector` | `ecas-collector:local` | 不暴露端口；`./secrets/ca.crt` 只读挂载 | `init: true`；MQTT/DB 口令都是 container secret |
 | secrets | — | `pg-password` / `auth-token` / `mqtt-pass` | 源文件来自 systemd 解密的凭据目录（root 0400），名字 → 容器 `/run/secrets/<名字>` |
 
 - **前端发布方式**：构建产物 `web/frontend/dist` 直接 rsync 到服务器 `./frontend-dist`（挂进 api 容器）⇒ 只改前端**不用重启容器**，也不用重建镜像。
 - **边缘反代**：`web/deploy/cloud/`（`docker-compose.yml` + `nginx/ecas-edge.conf` + `deploy-cloud-edge.sh`）部署到腾讯云 `/opt/ecas-edge/`，容器 `ecas-edge`（`nginx:1.27-alpine`、`network_mode: host` ⇒ 直绑宿主 80/443）；`/ws/readings` 已转发 `Upgrade`/`Connection`，实时曲线才能连上。
-- **绑定地址强制**：`BIND_IP:?` 要求显式给叠加网地址（如 `10.10.10.11`），漏了就起不来——绝不允许退化成 `0.0.0.0` 全开。
+- **绑定地址强制**：`BIND_IP:?` 要求显式给绑定地址，漏了就起不来——绝不允许退化成 `0.0.0.0` 全开。现值为 **`127.0.0.1`**（2026-10-26 收口；历史值 `10.10.10.11` 为叠加网地址，已作废）。
 - 本地开发栈（Mac）与云端的差异见手册 §6；本地后端默认 `127.0.0.1:8080`。
 
 ---

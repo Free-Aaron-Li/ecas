@@ -18,9 +18,20 @@ ENV PYTHONUNBUFFERED=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_DEFAULT_INDEX=${PIP_INDEX}
 
+# 中文字体（⚠️ 不是可选项，是班次报表 Excel 的正确性依赖）
+#   app/report.py 用 matplotlib 把曲线图渲成 PNG 嵌进 .xlsx。matplotlib 找不到含中文字形的
+#   字体时会**静默退化**成英文标签（宁可英文也不要一片方块）——功能不报错、图也出得来，
+#   但先生要的是「网页上展示的全部信息」，中文标签是其中一部分，退化了不易察觉。
+#   python:3.13-slim 里连 /usr/share/fonts 目录都不存在，所以必须在这里装。
+#   fonts-noto-cjk 落到 /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc，
+#   正是 report.py `_CJK_FONT_PATHS` / `_CJK_FONT_GLOBS` 覆盖的路径。
+#   fontconfig 不是 matplotlib 的依赖（report.py 直接按文件路径 addfont），
+#   装它是为了容器里能跑 `fc-list :lang=zh` 做人工核对 —— 排查成本远低于多出来的几 MB。
+#   注意：不要往里塞 `fonts-noto-cjk-extra` / `fonts-noto-color-emoji`，本报表用不到。
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates tzdata; \
+    apt-get install -y --no-install-recommends ca-certificates tzdata fontconfig fonts-noto-cjk; \
+    fc-cache -f >/dev/null; \
     rm -rf /var/lib/apt/lists/*; \
     pip install --no-cache-dir -i "$PIP_INDEX" uv
 

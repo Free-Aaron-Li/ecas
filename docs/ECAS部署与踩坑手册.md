@@ -21,11 +21,13 @@ status: 运行中（DTU 走 8883 明文口；塔石 DTU 实测只能明文，TLS
 > 一句话：**现场浓度计（4–20mA → RS485/Modbus）→ 塔石 4G DTU → MQTT → 腾讯云服务器 → PostgreSQL → FastAPI → 网页看板**，全链路已经把"从裸机到能看数据"跑通一遍；这份文档把**步骤、口径、坑**一次性写清楚，给后续开发（以及三个月后的自己）用。
 
 > [!summary]- 30 秒速览
-> - **数据在哪**：腾讯云 `124.222.122.146` 的 PostgreSQL 库 `ecas`，表 `raw_reading(model, ts, raw)` —— **只存原始值**，一切换算在后端。
-> - **看板在哪**：云端 `127.0.0.1:8080`（ecas-web），**不对公网开放**，只能隧道访问：`ssh -o ControlMaster=no -f -N -L 18080:127.0.0.1:8080 ecas`，然后开 `http://127.0.0.1:18080/`。
-> - **令牌在哪**：`ssh ecas 'grep ECAS_AUTH_TOKEN /root/ecas-web/ecas-web.env'`（也可用 `?token=xxx` 直链，前端会自动存下并抹掉地址栏）。
+> - ⚠️ **2026-09-29 起拓扑变了，下面几条已按新拓扑写**：应用（后端 + 看板）**不在腾讯云**了，在 **ubuntu-super:/opt/ecas 的 Docker 栈**；腾讯云那台只做 MQTT 中继（`ecas-mqtt-relay.service`）与边缘网关（容器 `ecas-edge`，80/443）。
+> - **数据在哪**：PostgreSQL 库 `ecas`，表 `raw_reading(model, ts, raw)` —— **只存原始值**，一切换算在后端。现网是容器 `ecas-db`，数据落宿主机 **`/data/ecas/pgdata`（唯一副本）**；腾讯云的 `/var/lib/pgsql/data` 已不是现网。
+> - **看板在哪**：容器 `ecas-api` 绑 **`127.0.0.1:18080`**（**2026-10-26 安全收口**：只绑回环，叠加网/公网/办公网都到不了）。开法：`./web/scripts/ecas-dashboard.sh`，或直接开 `http://127.0.0.1:18080/` —— 隧道由 launchd `com.ecas.tunnel` 常驻（`ssh -N -L 18080:127.0.0.1:18080 ubuntu-super`，KeepAlive 自愈），不需要手动起。⚠️ 历史写法「隧道出口写 mesh 地址」已作废。
+> - **令牌在哪**：**容器 `ecas-api` 的 PID 1 环境里**（entrypoint 从 container secret 导出，见 `web/deploy/ubuntu/backend/entrypoint.sh`；它不再来自 `/root/ecas-web/ecas-web.env`）。最省事的取法：`./web/scripts/ecas-dashboard.sh --url` —— 直接给带令牌直链（前端会自动存下并抹掉地址栏）。
 > - **换算口径**：`浓度 = (raw − 4000) ÷ 160 + 0.48`（09-26 15:40 现场 7 点比对标定；此前为 +0.3）；`raw < 3600` 断线、`raw > 20500` 超量程。
-> - **改口径只改一处**：本地 `web/backend/app/settings.py`（云端用 `ecas-web.env` 覆盖），前端只负责显示。
+> - **改口径只改一处**：本地 `web/backend/app/settings.py`（现网用容器环境变量覆盖），前端只负责显示。
+> - **部署怎么发**：`web/deploy/ubuntu/deploy.sh preflight|push|build|up|check|all`（说明见 `web/deploy/ubuntu/README.md`）。`web/scripts/deploy-to-cloud.sh` **已退役**、默认拒绝执行。
 
 > [!tip] 我要做什么 → 看哪节
 > | 我要… | 去 |
@@ -387,7 +389,16 @@ raw = 4000 + (浓度 − 0.48) × 160          # ⭐ 现役补偿 0.48
 
 ---
 
-## 4. 云端部署（裸机 → 可用）
+## 4. 云端部署（裸机 → 可用）⚠️ 本节已退役
+
+> **⚠️ 本节（4.1–4.4）描述的是 2026-09-26 那套腾讯云 systemd 部署；2026-09-29 起已不是现网。**
+> 现网应用在 **ubuntu-super:/opt/ecas 的 Docker 栈**，部署命令是
+> `web/deploy/ubuntu/deploy.sh`（说明见 `web/deploy/ubuntu/README.md`；
+> 新旧对照表见 [`云端部署.md`](./云端部署.md) 开头的横幅）。
+> `web/scripts/deploy-to-cloud.sh` 已加退役闸门、默认拒绝执行 —— 因为它指向的
+> `ecas-web.service` 单元**仍然存在**，照着本节跑**不会报错**，只会 rsync 一份没人用的
+> 代码、enable 一个没人用的单元，也就是静默部署到错的地方。
+> 本节保留作历史参考，**但别再照着它部署**。
 
 ### 4.1 前置
 
@@ -715,7 +726,7 @@ tls_version tlsv1.2
 | 凭据 | `/opt/ecas/credentials/{pg-password,auth-token,mqtt-pass}`（目录 700、文件 600 root）→ compose secret → 容器 `/run/secrets/*`；**目标机 systemd 249 没有 `systemd-creds`**，此机破例用 600 明文（先生同意，记在密钥卷 README + 审计 #284） |
 | 数据 | `/data/ecas/pgdata`（44T 数据盘，不是系统盘） |
 | 单元 | `ecas-stack.service`（`Type=oneshot` + `docker compose up -d`，已 `enable` + `active`） |
-| 看板 | `http://10.10.10.11:18080`（**只能从 mesh 内访问**；`/healthz` 公开，`/api/*` 要 Bearer 令牌） |
+| 看板 | `http://127.0.0.1:18080`（**只能经先生本机 SSH 隧道访问**；`/healthz` 在本机隧道内公开，`/api/*` 要 Bearer 令牌） |
 
 关键取值：`OFFSET_CONC=0.48`、`MODEL_NAME=DPRO-66`、只读账号 `ecas-monitor`、`MQTT_TOPIC=dpro66`。
 宿主端口 **18080**：这台机上 `0.0.0.0:8080` 已被生产容器 `side.base.apigateway` 占用（实测 bind 冲突）。
@@ -753,7 +764,7 @@ tls_version tlsv1.2
 
 #### 5.7.3 自检（`./web/deploy/ubuntu/deploy.sh check`）
 
-六步：① `docker compose ps` 三容器 Up ② `ss -lnt` 只见 `10.10.10.11:18080`（绝无 `0.0.0.0:18080`）
+六步：① `docker compose ps` 三容器 Up ② `ss -lnt` 只见 `127.0.0.1:18080`（绝无 `0.0.0.0:18080`，也无 `10.10.10.11:18080`）
 ③ 无令牌 `/healthz` = 200（该端点本就公开）④ 无令牌 `/api/readings` = **401**、带令牌 = 200
 ⑤ 库里行数 + 换算抽查 ⑥ 采集器日志（应见 `证书指纹 ✓ …` 与 `已连上 10.10.10.123:8884`）。
 2026-09-26 首轮全绿：`20:27:53 / 20:29:33 / 20:31:13 / 20:32:53` 四条真实数据已入库（约 100 秒一条），
@@ -769,8 +780,8 @@ tls_version tlsv1.2
 
 ### 5.8 公网发布：云端 nginx 反代（2026-09-26 上线）
 
-对外入口：**`https://124.222.122.146/`**（云端公网 IPv4）→ 反代 `http://10.10.10.11:18080`
-（Ubuntu 测试栈，**全程走 mesh 隧道，公网不暴露 18080**）。
+~~对外入口：`https://124.222.122.146/` → 反代 `http://10.10.10.11:18080`~~ —— **2026-10-26 已整体关闭**
+（域名 403 桩、公网 IP 无监听、VPC 隧道停、叠加网拒连；唯一入口是本机 SSH 隧道 `http://127.0.0.1:18080`）。
 
 - **完整链路的第四跳**（先生 2026-09-26 口述）：`DTU → 腾讯云 MQTT → Ubuntu 入库与前后端 → 腾讯云发布网页至外网`。
   因此公网唯一入口是云端这一层；**ADR 5 的适用范围随之收窄为「Ubuntu 看板不直接暴露」**（云端这道门是先生要的）。
@@ -817,7 +828,7 @@ tls_version tlsv1.2
   按日 `2026-09-25 → 55 条`、`2026-09-26 → 728 条`；两端 `max(ts)` 均 `2026-09-26 20:56:14+08`。
   告警两表（`alarm_config` / `alarm_event`）云端都是 **0 行**，没有告警数据需要迁（本地告警表由后端自建）。
 - **终态快照留档**：云端 `/root/ecas/archive/db/ecas-final-20260926-205724.dump`（19K，sha256 `9d3b1b7b…`）
-  与同名 `.sql`（34K，sha256 `1ad37a2c…`）；Mac 另留一份 `~/ecas-backups/ecas-final-20260926-205724.dump`。
+  与同名 `.sql`（34K，sha256 `1ad37a2c…`）；Mac 另留一份 `~/backup/ecas/ecas-final-20260926-205724.dump`（目录 700 / 文件 600，2026-10-21 从 `~/ecas-backups` 迁入）。
 - **云端退库（按单元逐个停）**：`ecas-monitor`、`ecas-web` 停用；`ecas-healthcheck.timer`、`ecas-pgdump.timer` 停用；
   `postgresql.service` disable + stop（数据文件仍在 `/var/lib/pgsql/data`，回滚 = `systemctl enable --now postgresql`）。
   **`ecas-mqtt-watch.timer` 保留** —— 它只读 `/var/log/mosquitto/mosquitto.log`，不碰数据库。
@@ -858,8 +869,10 @@ tls_version tlsv1.2
   **只在「状态变化」时落事件**（正常→异常、异常→恢复），避免每 5 分钟刷屏；首次运行只建基线不落事件。
   退出码恒为 0 —— 现场 DTU 夜间停发属正常，把 unit 打成 failed 会淹没真故障；异常靠 journal/文件/表呈现。
 - **手动跑一次**：`./web/deploy/ubuntu/deploy.sh watchdog`（结果 + 最近事件）。
-- **通知钩子**：`/opt/ecas/.env` 里设 `WATCHDOG_NOTIFY_CMD=/path/to/脚本`，状态变化时把一行中文消息作**唯一参数**传给它。
-  **当前未设置** ⇒ 看门狗只负责「发现 + 记录」，**还没有任何推送**（报警外发通道仍是待先生决定项，§12.2）。
+- **通知钩子**：`/opt/ecas/.env` 里设 `WATCHDOG_NOTIFY_CMD=/path/to/脚本`，状态变化时把一行中文消息作**唯一参数**传给它
+  （脚本必须是**可执行文件**，且只收到这一个参数）。
+  **当前仍未设置** ⇒ ubuntu 侧看门狗只负责「发现 + 记录」；真正的**外发由 Mac 侧的轮询作业承担**（见 §5.11），
+  所以服务器上不放任何推送凭据、也不开任何入站端口。
 - **故障演练证据（2026-09-26 21:05，安全无副作用）**：用 `STALE_MIN=0` 跑一次 ⇒
   `fresh → crit（problem）：最新数据 1 分钟前（2026-09-26 21:04:37），超过 0 分钟阈值`，
   随即正常跑一次 ⇒ `fresh → ok（cleared）`；`health_event` 表里两行都在，JSONL 两行也在 ✅
@@ -867,6 +880,75 @@ tls_version tlsv1.2
 - 自检时踩到并已修的两个坑：① `psql -Atc` 多列用 `|` 分隔，`read` 必须显式 `IFS='|'`，否则整行塞进第一个变量，
   整数比较报 `值对于底数而言过大`，`fresh` 这项会静默消失；② 首次运行（无状态文件）若照常比对照落事件，
   会平白写一堆 `cleared` 误导人 ⇒ 现在首次只建基线。
+
+### 5.11 Mac 侧健康看门与报警外发（2026-09-29 上线）
+
+先生的选型：**A 方案 —— Mac 侧轮询，复用本机 `notify.sh`**。
+理由：零凭据、零入站端口、直接复用既有告警体系（横幅 + 详情窗 + 确认 + 夜间分级 + 300s 去重）；
+代价如实记录：**Mac 关机/离线时收不到推送**（服务器侧照常记录事件，不会丢）。
+
+- **作业**：`~/Library/LaunchAgents/com.user.ecas-health-watch.plist`（`RunAtLoad=true`、`StartInterval=300`，
+  经 `~/.files/dsh/bin/lib/job-run.sh --quiet ecas-health-watch` 起，日志 `~/.dsh/logs/ecas-health-watch.log`）。
+- **脚本**：`~/.files/dsh/bin/ecas-health-watch.sh`（轮询器）+ `~/.files/dsh/bin/lib/ecas-health-core.py`（解析/去重/定级）。
+  子命令：`tick`（默认）/ `status` / `reset` / `selftest`。
+- **两个来源**（都经叠加网 `ssh` 读文件，**故意不复用 ssh 长连接**，避免把连接挂在隧道里）：
+
+| 来源（主机别名） | 文件 | 内容 |
+| --- | --- | --- |
+| `ubuntu-super` | `/var/log/ecas/watchdog.jsonl` | 六项巡检的状态变化（`check/status/event/detail`），见 §5.10 |
+| `ecas`（腾讯云） | `/root/ecas/logs/mqtt-watch.jsonl` | DTU 被拒 / 陌生 ClientId 冒名（含 IP、账号、clientid） |
+
+- **定级规则**：`db`/`fresh`/`collector`/`api` 四项 crit ⇒ **critical**（夜间也叫醒）；其余 crit ⇒ `alert`；
+  `warn` ⇒ `alert --no-sound`；恢复 ⇒ 此前是 crit 则 `alert`，否则 `info`。
+  云端**口令/认证类**关键词 ⇒ 有声 `alert`，其它类别 ⇒ 静音 `alert`。
+  来源连续 3 拍取不到 ⇒ `warn`，持续 30 分钟 ⇒ `alert`，恢复 ⇒ 回执。
+- **首次运行只建基线不补报**（否则上线瞬间会把历史事件全弹一遍）；指纹去重 + 上限 400 条；
+  状态文件 `~/.dsh/ecas-health-state`（**在本机**，不在远端）。同一事件永不重复打扰。
+- **端到端演练（2026-09-29，对真机 `ubuntu-super`，状态与远端临时文件均隔离）**：
+  首拍只发 `info 🛡 ECAS 健康看门已上线（ubuntu-super）` ⇒ 追加 `disk/warn/problem` 得
+  `alert persona=kagemusha ⚠️ ECAS 看门狗：disk 警告`（横幅静音）⇒ 追加 `disk/ok/cleared` 得
+  `info persona=anna ✅ ECAS 看门狗已恢复：disk`，三拍全绿。
+- **离线回归**：`bash ~/.files/dsh/tests/ecas-health-watch-test.sh`（fixture + 假 notify，不 ssh、不弹窗），35 项断言。
+- ⚠️ **坑**：在 DSH 默认沙箱里手工跑 `tick`，`notify.sh` 写 `~/.dsh/logs/notify-events.jsonl` 会被拒
+  （`Operation not permitted`）⇒ **通知会静默丢失**；手工验证/演练必须用 `danger-full-access` 执行
+  （launchd 里跑不受影响）。
+- **演练一次假事件的姿势**：`ECASW_UBUNTU_PATH` 指向远端临时文件 + `ECASW_STATE` 指向临时状态文件 +
+  `ECASW_DISABLE_CLOUD=1`；**状态文件是本机路径**，别跑去远端删。
+
+### 5.12 Cloudflare Worker 网关：白名单策略与登录限速（2026-09-29）
+
+当前公网唯一入口是 **Worker `gateway`**（`https://gateway.xshky.org`，源码在 **`~/.files/dsh/ecas-gateway/`**，
+**不在本仓库**），经 Workers VPC 直达 `10.10.10.11:18080`；云端 nginx 只剩 `301`（见 `web/deploy/cloud/README.md`）。
+
+> ⚠️ **2026-10-26 已收口**：该 Worker 换成 403 封锁桩（`src/lockdown.js`），`cloudflared` 与 `ecas-edge` 均已停（`restart=no`）。
+> 本节保留为历史记录；现行访问方式见 `web/deploy/ubuntu/README.md` 的「访问入口」与 `docs/安全收口-2026-10-26.md`。
+
+- **白名单策略（本次改动）**：`allowedByPolicy(path, method, isWs)` 新顺序 =
+  `/internal/*` 前缀一律拒 → `if (isWs) return WS_ROUTES.has(path)` → 精确表 `API_ROUTES` 按表内方法 →
+  **`/api/` 前缀下 GET/HEAD 一律放行** → 写方法 false → 静态规则。
+  - **收益**：后端新增**只读**接口（`/api/...`）**不再需要改 Worker 白名单、也不再需要重新部署**
+    （2026-09-29 曾因漏登记 `/api/shifts` 而 403）。
+  - **不变式**：写方法（POST/PUT/PATCH/DELETE）**永远必须显式登记** ⇒ 忘记同步只会「403 安全失败」，
+    不会退化成写入漏洞。
+  - **WebSocket** 收敛为独立 `WS_ROUTES = {'/ws/readings'}`：旧实现里**任何登记了 GET 的 HTTP 接口**都能被
+    WebSocket 升级（本次修掉）。后端 WS 端点权威清单只有 `web/backend/app/main.py` 的 `@app.websocket("/ws/readings")`。
+  - `/internal/*` 一律 403（本仓库后端没有这个前缀，防的是将来内部接口被公网摸到）。
+- **登录限速加固（安全审查 L-06）**：KV 计数是最终一致的（跨 colo 会漏），因此在 KV 之外加了
+  **双键 + 渐进延迟** —— `rl:<ip>` 与 `rlu:<用户名>` 分别计数，任一 ≥ 10 次/15 分钟即 429；
+  失败时 `await sleepMs(min(2000, 250×n))`（**不依赖 KV**，跨 colo 漏计也压得住爆破吞吐）；成功则两键清零。
+- **部署**：`cd ~/.files/dsh/ecas-gateway && npx --yes wrangler@4 deploy`。
+  ⚠️ 非交互环境下 OAuth 会话不可用（报 `In a non-interactive environment, it's necessary to set a CLOUDFLARE_API_TOKEN`），
+  须用钥匙串里的 `cf-api-token`：
+  `bash ~/.files/dsh/bin/cred-keychain.sh run cf-api-token -- bash -c 'cd ~/.files/dsh/ecas-gateway && export npm_config_cache=/tmp/npm-cache && CLOUDFLARE_API_TOKEN="$CRED_VALUE" npx --yes wrangler@4 deploy'`，
+  且需 `danger-full-access`（要读 `~/Library/Preferences/.wrangler`、写 npm 缓存）。
+  先干跑：`... npx --yes wrangler@4 deploy --dry-run --outdir /tmp/wtest/dist`。
+  回滚：`wrangler rollback` 或部署 `src/worker.js.bak-20260929-preapiroutes`。
+- **部署后线上验收矩阵（2026-09-29 实测，版本 `3ef1b240-734a-4227-8df5-6883b6b39927`）**：
+  `POST /login` = **302**（真口令登录）；带会话 `/` = 200、`/api/params` = 200（真数据 `{"model":"DPRO-66",…}`）、
+  `/api/readings` = 200、`/api/summary` = 200、`/api/export.csv` = 200；
+  **未登记只读端点 `/api/__ecas_probe__` = 404 `{"detail":"Not Found"}`**（证明确实转发给了后端，而不是网关 403）、
+  **`/internal/accounts` = 403 `{"error":"not allowed",…}`**、`/ws/readings`（无 `Upgrade` 头）= 404。
+  无会话时：`/healthz` = 200、`/login` = 200，其余 **带 `Accept: text/html` ⇒ 302 → `/login`**、**非 HTML ⇒ 401**。
 
 ---
 
@@ -949,7 +1031,7 @@ web/scripts/sync-from-cloud.sh    # ssh + pg_dump → 本地 ecas_dev（--clean 
 | `/api/auth` | GET | ❌ | 告知前端"要不要令牌" |
 | `/api/params` | GET | ✅ | 量程、补偿、阈值（含反解 raw）、`alarms.custom` |
 | `/api/health` | GET | ✅ | 数据新鲜度、最新值、行数 |
-| `/api/readings` | GET | ✅ | `hours`(1..720) / `limit`(1..5000) / `offset` |
+| `/api/readings` | GET | ✅ | `hours`(1..720) / `limit`(1..5000) / `offset` / `sample=none\|auto`（`auto`＝整窗均匀抽样，见 §7.6） |
 | `/api/summary` | GET | ✅ | 有效行数、均值、越限计数 |
 | `/api/export.csv` | GET | ✅ | 中文表头 CSV（带 BOM + 注释头） |
 | `/api/alarms` | GET | ✅ | 报警事件列表 + 最近一次扫描结果 |
@@ -984,7 +1066,8 @@ web/scripts/sync-from-cloud.sh    # ssh + pg_dump → 本地 ecas_dev（--clean 
 - 中文表头：`型号,时间,原始值,电流(mA),未补偿浓度,浓度,状态`
 - 带 **BOM**（Excel 打开不乱码）+ 10 行 `#` 注释头（写明区间、口径、补偿值、报警阈值、异常阈值、外推值警告）
 - 下载链接**必须带 `?token=`**：`<a download>` 带不了 `Authorization` 头
-- 行数上限 `ECAS_EXPORT_ROWS_MAX`（默认 20000）
+- 行数上限 `ECAS_EXPORT_ROWS_MAX`（默认 **50000**，2026-10-09 由 20000 提高）；**超限直接 400**
+  （`该区间共 N 行，超过导出上限 M 行：请缩短区间后重试`），从前是 `LIMIT` 静默丢行
 
 ### 7.5 前端看板
 
@@ -994,6 +1077,20 @@ web/scripts/sync-from-cloud.sh    # ssh + pg_dump → 本地 ecas_dev（--clean 
 - 报警面板（自定义上下限、保存/恢复默认、立即扫描、进行中报警、事件表）
 - 最近读数表（越限行高亮 + `↑越限`/`↓越限`）
 - 令牌门（未带令牌时弹出输入框）
+
+### 7.6 长区间趋势图：整窗均匀抽样（2026-10-09 修）
+
+> [!bug] 现象：选 198 小时，趋势图只画最近 ~3.5 天
+> 先生 2026-10-09 报「哪怕我选择日期超过 7 天，但是趋势图还是最多只能显示最近 4 天内容」。
+> 根因：`SQL_READINGS` 是 `ORDER BY ts DESC LIMIT %(limit)s`，而前端 `fetchReadings` 默认 `limit=3000`；198h 窗口实测 **7121 行** ⇒ 接口**只返回最新 3000 条**（≈3.5 天），前端 X 轴又用 `domain={['dataMin','dataMax']}` 贴着手里这点数据铺 ⇒「窗口 8 天，图上只有 3.5 天」。7 天（6042 行）与 30 天（11592 行）同样被截断，而且**界面上没有任何提示**（静默）。
+
+- 后端 `GET /api/readings` 新增 `sample` 参数：
+  - `none`（默认，**语义不变**）＝最新 `limit` 条 —— 分页、表格、"最新一条"用它；
+  - `auto`＝先 `count(*)`，**只有**窗口行数超过 `limit` 时才对整个窗口抽样：`width_bucket(epoch, start, end, limit)` 分桶，每桶取 `rn = (n+1)/2`（**时间居中的真实行**，不插值、不平均）；响应多回 `rows_total` / `sampled` / `bucket_seconds`。
+- 前端：图表单独一次 `fetchReadings(w, 4000, 'auto')`（常量 `CHART_POINTS`），表格与"最新值"继续用精确的 `limit=25` 分页；X 轴改为**钉住所选区间**（数据越界时才放宽）；抽样时图上方渲染 `.chart-note` 说明「该区间共 N 个测点 → 抽成 M 个点，约每 X 一个」。
+- **线上验收（2026-10-09，经 `gateway.xshky.org`，账号会话）**：24h → 863 行、`sampled=false`；7d → 6042 行抽 4000 点（151.2 s/点）；自定义 198h → 7121 行抽 4000 点（178.2 s/点），首尾覆盖 `10-01 03:15:42 → 10-09 09:12:34`；30d → 11592 行抽 1803 点（648 s/点，空桶自动跳过）；`/api/export.csv?hours=720` = 200、742 KB。
+- 教训：**把分页的 `LIMIT` 语义拿去画图，数据一多就只剩尾巴**。凡是"要画出整个区间"的视图，必须显式选一条路（抽样 / 分页拉全 / 明确告知截断），不能默默 `LIMIT`；导出同理（`ORDER BY ts ASC LIMIT` 丢掉的是**最新的行**，最坑）。
+- 回归：`web/backend/tests/test_readings_sampling.py`（5 例：默认语义不变、`auto` 铺满整窗且都是真行、行数不超限不抽样、`rows_total` 与 `/api/summary` 同源、兜底入参）+ `test_export.py::test_超上限报_400_而不是静默丢尾巴`。
 
 ---
 
@@ -1370,12 +1467,16 @@ ssh -N -L 12121:127.0.0.1:12121 ecas     # 需要时开；关掉隧道 = 控制�
 - [x] ~~本地库每日备份~~（2026-09-26：`ecas-backup.timer` 每天 03:30，产物 `/data/ecas/backups/`，恢复演练通过，§5.9）
 - [x] ~~数据库备份加**异地副本**~~ ⇒ 先生 2026-09-26 明确「腾讯云不需要任何备份，备份存放在本地服务器」：**异地副本不做**，只留 Ubuntu 本机 `/data/ecas/backups/`（ADR 20）
 - [x] ~~看门狗迁到本地~~（2026-09-26：`ecas-watchdog.timer` 每 5 分钟六项检查，故障演练通过，§5.10）
-- [ ] 看门狗的**推送**还没通道（`WATCHDOG_NOTIFY_CMD` 未设 ⇒ 只记录不打扰）⇒ **先生定：明天做**，见上方「明天已点名的两件事」
-- [ ] 云端 mosquitto 侧的 DTU 被拒 / 冒名检测仍在云端 `ecas-mqtt-watch.timer`（保留运行），但结果只落云端 JSONL，**没有汇总到看板或看门狗**
+- [x] ~~看门狗的**推送**通道~~（2026-09-29：先生选 **A 方案 —— Mac 侧轮询 + 复用本机 `notify.sh`**，见 §5.11；
+      零凭据、零入站端口，代价是 Mac 关机时收不到）
+- [x] ~~云端 `ecas-mqtt-watch` 的结果没有汇总~~（2026-09-29：Mac 侧轮询作业把 `/root/ecas/logs/mqtt-watch.jsonl`
+      当作**第二个来源**，与看门狗事件进同一个通知流，见 §5.11）
+- [x] ~~网关 Worker 的 `API_ROUTES` 手工精确表~~（2026-09-29：`/api/` 前缀下**只读方法免维护**、写方法仍须显式登记；
+      顺带修掉「登记了 GET 的 HTTP 接口可被 WebSocket 升级」与 L-06 登录限速，见 §5.12）
 - [ ] 复查 mosquitto autosave（14:54 后 `grep -c "Error saving in-memory database"` 应停在 46）
 
 **等先生决定**
-- [ ] 报警外发通道选哪条（短信 / 微信 / 邮件 / 滴答清单）
+- [x] ~~报警外发通道选哪条（短信 / 微信 / 邮件 / 滴答清单）~~ ⇒ 先生 2026-09-29 选 **A · Mac 侧轮询 + 复用 `notify.sh`**（不发短信/微信/邮件），见 §5.11
 - [ ] 塔石对 TLS 的答复（A/B/C 三选一；**C 已落地**）
 - [x] ~~数据迁回本地库（**已明确暂缓**）~~ ⇒ **2026-09-26 已切换完成**（云端退居中转，历史 783 条补全到本地，md5 一致，见 §5.9 / ADR 18）
 
@@ -1399,6 +1500,8 @@ ssh -N -L 12121:127.0.0.1:12121 ecas     # 需要时开；关掉隧道 = 控制�
    `WATCHDOG_NOTIFY_CMD` 未设 ⇒ **只发现不打扰**。明天定下外发通道（短信 / 微信 / 邮件 / 滴答清单）后设上钩子；
    顺带把云端 `ecas-mqtt-watch.timer`（DTU 被拒、陌生 ClientID 冒名，现在只在云端 JSONL 里）的结果汇总到同一处，
    让「所有异常在一个地方看得见」。报警外发通道与 §12.2「报警外发」是同一件事，一起定。
+   ✅ **2026-09-29 已落地**：先生选 A 方案（Mac 侧轮询 + 复用 `notify.sh`）⇒ 看门狗事件与云端 `mqtt-watch`
+   结果都进了 Mac 同一个通知流；`/opt/ecas/.env` 的 `WATCHDOG_NOTIFY_CMD` **仍然不设**（服务器侧不需要凭据），见 §5.11。
 
 ### 12.3 下次开工前 5 分钟自检
 

@@ -518,3 +518,41 @@ ssh ecas 'docker inspect ecas-api --format "{{.HostConfig.ReadonlyRootfs}} {{.Ho
 
 *报告完 · 2026-09-28 · 附录 B 增补于同日（安全组规则复核）· 7.2 执行进展据先生 14:56 二次导出复核*
 
+
+---
+
+## 附录 C：2026-10-26 访问面收口（先生令：只允许我这台电脑访问）
+
+**命令**（m00001）：「对浓度采集网站安全性进行更改，仅允许我这台电脑访问，其他一律禁止。」
+**方案**（先生选定 A + 「确认，全部关死」）：后端只绑回环，唯一入口＝先生这台 Mac 的常驻 SSH 隧道；
+公网域名 / 公网 IP / VPC 隧道 / 叠加网直连**全部切断**（不是加白名单，是关掉所有其它入口）。
+
+| 入口 | 收口前 | 收口后 |
+| --- | --- | --- |
+| 后端绑定 | `10.10.10.11:18080`（整个叠加网可达） | **`127.0.0.1:18080`**（仅本机可连） |
+| 本机访问 | 手动/脚本起隧道 | launchd `com.ecas.tunnel` 常驻（`KeepAlive`，登录即起） |
+| `gateway.xshky.org` | Worker 登录页 + 账户层 + VPC 中继 | **403 封锁桩**（`src/lockdown.js`，登录/账户/中继全停） |
+| `124.222.122.146:80/443` | nginx `ecas-edge`（301 → 域名） | **容器 stopped + `restart=no`**，宿主 80/443 无监听 |
+| Workers VPC 隧道 | `cloudflared` 容器常驻（`restart=always`） | **stopped + `restart=no`** |
+| 叠加网直连 | `http://10.10.10.11:18080` 200 | **拒连**（mesh 内其它成员同样不可达） |
+
+**为什么不用「只放行本机公网 IP」**：本机出口实测 `219.77.163.203`，经代理且**动态、共享**
+（同出口有其他用户）；按 IP 放行等于放行整条代理出口，且 IP 一变就自锁 —— 故用「回环 + SSH 私钥」作为唯一身份。
+
+**验收（2026-10-26 09:0x，Mac 侧实测）**：
+`127.0.0.1:18080/healthz = 200`｜`10.10.10.11:18080` 连不上｜腾讯云机连 `10.10.10.11:18080` 同样连不上｜
+`http://124.222.122.146/` 连不上｜`https://gateway.xshky.org/` 与 workers.dev = **403**；
+采集链路未受影响：`raw_reading` 09:00:21 仍在入库，看门狗六项全绿（`api http://127.0.0.1:18080/healthz → 200`）。
+
+**回滚清单**（逐项独立，互不依赖）：
+1. 后端：`/opt/ecas/.env` 的 `BIND_IP` 改回 `10.10.10.11` → `docker compose up -d --no-deps api`（备份 `.env.bak-lockdown-*`）。
+2. 域名：`~/.files/dsh/ecas-gateway/` 下 `wrangler.jsonc` 的 `main` 改回 `src/worker.js` → `npx wrangler deploy`
+   （原始源码已留 `worker.js.bak-20261026-lockdown`）。
+3. VPC 隧道：`docker update --restart=always cloudflared && docker start cloudflared`。
+4. 腾讯云边缘：`docker update --restart=unless-stopped ecas-edge && docker start ecas-edge`（或 `cd /opt/ecas-edge && docker compose start`）。
+
+**注意**：① 隧道依赖 easytier 叠加网在跑；② 腾讯云安全组的 80/443 放行规则仍在（无监听 ⇒ 不可达），
+清理需先生控制台操作或另配只读+安全组权限的临时密钥；③ 账号数据（`web_account`，`xsh`/`viewer`）保留未动，
+域名恢复后原登录方式即恢复；④ 新增部署一律走 `web/deploy/ubuntu/deploy.sh`，其 `.env` 模板已同步为 `127.0.0.1`。
+
+*附录 C · 2026-10-26 · 完整记录见 [`安全收口-2026-10-26.md`](./安全收口-2026-10-26.md)*

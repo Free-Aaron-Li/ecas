@@ -9,7 +9,9 @@ DSN 里**不含任何凭据**；生产端走 scram-sha-256 + `/root/.pgpass`，
 """
 
 from functools import lru_cache
+from zoneinfo import ZoneInfo
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -48,8 +50,15 @@ class Settings(BaseSettings):
     alarm_scan_seconds: int = 60
 
     #: 导出 CSV 的最大行数（越界夹住；比 /api/readings 的 5000 更宽松，
-    #: 因为导出是"要整段数据"的用途）
-    export_rows_max: int = 20000
+    #: 因为导出是"要整段数据"的用途）。窗口上限 720h、现场 100s 一个点 ⇒ 30 天满打满算
+    #: ≈26k 行，50000 保证"能选的区间都导得全"；真超了报 400 而不是静默截断。
+    export_rows_max: int = 50000
+
+    # —— 时区（班次报表的命门）——
+    #: 班次边界（白班 08:00–20:00 / 夜班 20:00–次日 08:00）按**这个时区**切，
+    #: 报表里的时间也按它出字。⚠️ 生产服务器通常跑在 UTC —— 不写死的话「早八点」
+    #: 会变成 UTC 08:00（北京 16:00），所有班次整体错 8 小时。默认与现场一致。
+    tz: str = "Asia/Shanghai"
 
     # —— 数据库：本地 unix socket + trust，无口令 ——
     dsn: str = "postgresql://ecas@/ecas_dev?host=/tmp&port=55432"
@@ -83,6 +92,18 @@ class Settings(BaseSettings):
     #: 是否暴露 FastAPI 自带的 `/docs`、`/redoc`、`/openapi.json`（安全审查 M-01 的修法）。
     #: **默认关**：接口清单本身是攻击者的地图，公网入口与边缘都不该提供。
     enable_docs: bool = False
+
+    @field_validator("tz")
+    @classmethod
+    def _check_tz(cls, value: str) -> str:
+        """非法时区**启动即失败**：悄悄回退成 UTC 会让班次边界整体偏移，比崩掉更难发现。"""
+        ZoneInfo(value)
+        return value
+
+    @property
+    def display_tz(self) -> ZoneInfo:
+        """展示/班次时区对象。"""
+        return ZoneInfo(self.tz)
 
     @property
     def auth_required(self) -> bool:

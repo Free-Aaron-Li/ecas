@@ -130,7 +130,21 @@ def test_limit_夹住(client: TestClient, with_token: str) -> None:
     resp = client.get(f"/api/export.csv?hours=720&limit=999999&token={with_token}")
     assert resp.status_code == 200
     assert resp.text.count("\n") >= 2, "越界的 limit 应夹住而不是报错"
-    assert get_settings().export_rows_max == 20000
+    assert get_settings().export_rows_max == 50000
+
+
+def test_超上限报_400_而不是静默丢尾巴(
+    client: TestClient, with_token: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """旧行为 `ORDER BY ts ASC LIMIT n` 会悄悄丢掉**最新**的行（导出文件看着正常却是残的）。
+
+    现在改成：窗口行数超过上限就 400，让调用方自己缩短区间。窗口上限 720h + 现场
+    100s 一个点 ⇒ 满打满算 ≈26k 行 < 50000，正常使用碰不到这个分支。
+    """
+    monkeypatch.setattr(client.app.state.settings, "export_rows_max", 3)
+    resp = client.get(f"/api/export.csv?hours=720&token={with_token}")
+    assert resp.status_code == 400
+    assert "超过导出上限" in resp.json()["detail"]
 
 
 def test_报警上下限反解(client: TestClient, with_token: str) -> None:
