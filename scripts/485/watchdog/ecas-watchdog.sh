@@ -187,10 +187,16 @@ if [[ "$code" == "200" ]]; then add api ok "http://$BIND_IP:$WEB_PORT/healthz �
 else add api crit "/healthz 返回 $code（期望 200）"; fi
 
 # ── 5. 备份新鲜度 ────────────────────────────────────────────────────────────
-newest=$(ls -1t /data/ecas/backups/ecas-*.dump 2>/dev/null | head -1)
-if [[ -z "$newest" ]]; then
-    add backup warn "没有任何备份文件（/data/ecas/backups/ 为空）"
+if [[ ! -r /data/ecas/backups ]]; then
+    # 目录 700 root：非 root 手动跑会读不到（2026-11-10 起不再误报"没有备份"）
+    add backup ok "备份目录不可读（当前非 root，跳过；systemd 以 root 跑）"
+    newest=""
 else
+    newest=$(ls -1t /data/ecas/backups/ecas-*.dump 2>/dev/null | head -1)
+fi
+if [[ -r /data/ecas/backups ]] && [[ -z "$newest" ]]; then
+    add backup warn "没有任何备份文件（/data/ecas/backups/ 为空）"
+elif [[ -n "$newest" ]]; then
     bh=$(( ( $(date +%s) - $(stat -c %Y "$newest") ) / 3600 ))
     if [[ $bh -gt $BACKUP_MAX_HOURS ]]; then
         add backup crit "最新备份 $(basename "$newest") 已 ${bh} 小时未更新（阈值 ${BACKUP_MAX_HOURS}h）"
