@@ -1,0 +1,8 @@
+[Unit]
+Description=ECAS gateway mode flipper (heartbeat-driven)
+After=network-online.target ecas-heartbeat-server.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ecas-gateway-flip.sh

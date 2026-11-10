@@ -1,0 +1,19 @@
+[Unit]
+Description=ECAS DTU relay (cloud; pass-through to local, capture spool when local down)
+After=network-online.target ecas-fallback-capture.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=RELAY_LISTEN_HOST=10.10.10.123
+Environment=RELAY_LISTEN_PORT=18883
+Environment=RELAY_LOCAL_HOST=10.10.10.11
+Environment=RELAY_LOCAL_PORT=8883
+Environment=RELAY_CAP_HOST=127.0.0.1
+Environment=RELAY_CAP_PORT=18884
+ExecStart=/usr/bin/python3 /opt/ecas/fallback/ecas-dtu-relay.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

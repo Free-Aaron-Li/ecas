@@ -1,0 +1,11 @@
+[Unit]
+Description=ECAS local heartbeat every 60s
+
+[Timer]
+OnBootSec=120
+OnUnitActiveSec=60
+AccuracySec=10
+Persistent=false
+
+[Install]
+WantedBy=timers.target

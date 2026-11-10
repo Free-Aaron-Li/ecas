@@ -1,0 +1,15 @@
+[Unit]
+Description=ECAS heartbeat receiver (cloud, overlay-only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=HB_BIND=10.10.10.123
+Environment=HB_PORT=18889
+ExecStart=/usr/bin/python3 /opt/ecas/fallback/ecas-hb-server.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,7 @@
+[Unit]
+Description=ECAS pull cloud spool and backfill (after local recovery)
+After=ecas-stack.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/ecas/watchdog/ecas-fallback-pull.sh

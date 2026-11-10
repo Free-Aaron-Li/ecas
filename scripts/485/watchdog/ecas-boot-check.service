@@ -1,0 +1,13 @@
+[Unit]
+Description=ECAS boot self-check (run watchdog once after stack is up)
+After=ecas-stack.service ecas-flow-ingest.service ecas-boot-prepare.service
+Wants=ecas-stack.service ecas-flow-ingest.service
+RequiresMountsFor=/opt/ecas
+
+[Service]
+Type=oneshot
+ExecStart=/opt/ecas/watchdog/boot-check.sh
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

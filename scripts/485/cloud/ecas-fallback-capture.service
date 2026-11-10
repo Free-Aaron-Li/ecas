@@ -1,0 +1,13 @@
+[Unit]
+Description=ECAS fallback capture (cloud; DTU frames -> JSONL spool)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/ecas/fallback/rtu_master.deployed.py --bind 127.0.0.1 --listen 18884 --interval 1.0 --timeout 2.0 --out /var/lib/ecas/fallback/spool/rtu-live.jsonl --quiet
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

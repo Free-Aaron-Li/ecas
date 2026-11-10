@@ -1,0 +1,16 @@
+[Unit]
+Description=ECAS boot prepare (repair MQTT configs before stack starts)
+DefaultDependencies=no
+After=docker.service network-online.target
+Wants=docker.service network-online.target
+Before=ecas-stack.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/bin/sleep 5
+ExecStart=/opt/ecas/watchdog/ecas-mqtt-selfheal.sh
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

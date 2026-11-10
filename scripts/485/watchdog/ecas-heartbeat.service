@@ -1,0 +1,7 @@
+[Unit]
+Description=ECAS local heartbeat to cloud (60s)
+After=ecas-stack.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/ecas/watchdog/ecas-heartbeat.sh
