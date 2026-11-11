@@ -64,7 +64,7 @@ const POLL_MS = 30_000
 
 type ShiftKind = 'day' | 'night'
 
-/** 选中班次的最小标识：`day` 是班次**开始**的那天（夜班 = 当晚）。 */
+/** 选中班次的最小标识：`day` 是班次的**归属日**（= 结束那天；夜班 = 次日早上结束，归次日）。 */
 interface ShiftSel {
   day: string
   kind: ShiftKind
@@ -87,12 +87,16 @@ function addDays(day: string, delta: number): string {
   return dayIso(dt)
 }
 
-/** 现在正处于哪个班次：08:00–20:00 白班；20:00 之后 / 08:00 之前是「当晚的夜班」。 */
+/**
+ * 现在正处于哪个班次：08:00–20:00 白班；20:00 之后 / 08:00 之前是夜班。
+ * 夜班**归属它结束的那一天**（2026-11-11 先生定）：20:00 起的是「次日」夜班，
+ * 凌晨 00:00–08:00 仍在这个「当天」夜班里。
+ */
 function currentShift(now: Date = new Date()): ShiftSel {
   const today = dayIso(now)
   const h = now.getHours()
-  if (h >= 20) return { day: today, kind: 'night' }
-  if (h < 8) return { day: addDays(today, -1), kind: 'night' }
+  if (h >= 20) return { day: addDays(today, 1), kind: 'night' }
+  if (h < 8) return { day: today, kind: 'night' }
   return { day: today, kind: 'day' }
 }
 
@@ -102,10 +106,14 @@ function shiftKindNow(now: Date = new Date()): ShiftKind {
   return h >= 20 || h < 8 ? 'night' : 'day'
 }
 
-/** 上一个班次：白班(D) 的上一个是 夜班(D-1)；夜班(D) 的上一个是 白班(D)。 */
+/**
+ * 上一个班次（按时间顺序，夜班归属结束日）：
+ * - 夜班(D) = D-1 20:00 → D 08:00，紧挨着它之前的是 白班(D-1)；
+ * - 白班(D) = D 08:00 → 20:00，紧挨着它之前的是 夜班(D)（即前一晚 20:00 起）。
+ */
 function prevShift(sel: ShiftSel): ShiftSel {
-  if (sel.kind === 'night') return { day: sel.day, kind: 'day' }
-  return { day: addDays(sel.day, -1), kind: 'night' }
+  if (sel.kind === 'night') return { day: addDays(sel.day, -1), kind: 'day' }
+  return { day: sel.day, kind: 'night' }
 }
 
 /** 看板上写的区间说明（导出按钮 title / 报警面板 / 统计都用它）。 */
@@ -162,7 +170,7 @@ export default function App() {
   }, [shift, nowTick])
 
 
-  // 选中的班次还没开始（例：下午 14:00 点开「今天夜班」= 20:00 起）：
+  // 选中的班次还没开始（例：14:00 点开「今天夜班」= 今晚 20:00 才起，归明天）：
   // 这时候窗口终点只能取到「现在」，start > end 后端会判非法 400（先生 2026-11-04 撞到的那条红条）。
   // 所以干脆不发请求：面板显示「本班尚未开始」，等到了点再取。
   const notStarted = shift != null && nowTick < Date.parse(shift.start)
@@ -445,7 +453,7 @@ export default function App() {
   const shiftPicker = (
     <>
       {/* 先生 2026-11-04：日期排最前，后面跟「本班/上一班」这种快捷选择 */}
-      <label className="shift-day" title="班次开始的那一天（夜班 = 当晚）">
+      <label className="shift-day" title="班次所属日（夜班 = 次日早上结束的那天，归该日）">
         <input
           type="date"
           value={sel.day}
@@ -622,7 +630,7 @@ export default function App() {
               <TeX tex={String.raw`Q = \dfrac{V}{\dfrac{1}{\rho_p} + \dfrac{1 - C}{C}}`} display />
               <p>
                 其中：<TeX tex={String.raw`\rho_w = 1`} /> t/m³（水的密度，已在推导中约掉）；
-                <TeX tex={String.raw`\rho_p = 4.3`} /> t/m³（铁精矿真密度，现场固定值）；
+                <TeX tex={String.raw`\rho_p = 3.44`} /> t/m³（铁精矿真密度，现场固定值）；
                 <TeX tex="C" /> 为矿浆质量浓度（浓度计读数，按 % 计）；
                 <TeX tex="V" /> 为矿浆体积（流量计给出的 m³）；<TeX tex="Q" /> 为干矿量（t）。
               </p>

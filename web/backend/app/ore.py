@@ -22,8 +22,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Iterable, Sequence, TypeVar
 
-#: 铁精矿真密度 ρp（t/m³）：现场固定值，不是仪表参数（2026-11-05 先生先改 4.1 后又改回 4.3）
-TRUE_DENSITY = 4.3
+#: 铁精矿真密度 ρp（t/m³）：现场固定值，不是仪表参数。
+#: 变更史：2026-11-05 先生先改 4.1、又改回 4.3；**2026-11-11 先生定为 3.44**（P 值 4.3 → 3.44）。
+TRUE_DENSITY = 3.44
 
 #: 浓度计与流量计的管道间距（m）：现场约 2~3 m，取中值 2.5
 PIPE_GAP_M = 2.5

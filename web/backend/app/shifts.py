@@ -1,8 +1,12 @@
 """班次（白班/夜班）的时间模型：定义、切分与命名。
 
-口径照用户定的来：**白班 08:00–20:00，夜班 20:00–次日 08:00**，各 12 小时，
-首尾相接、无缝无重叠。一个班次归属「它开始的那一天」—— 所以「2026-09-25 夜班」
-指的是 09-25 20:00 到 09-26 08:00，而不是 09-24 那天夜里。
+口径：**白班 08:00–20:00，夜班 20:00–次日 08:00**，各 12 小时，首尾相接、无缝无重叠。
+
+归属规则（2026-11-11 先生定：「11.10 20:00～11.11 08:00 应统计在 11.11 夜班」）：
+**一个班次归属「它结束的那一天」**——夜班跨零点、凌晨 08:00 才结束，所以归**次日**。
+于是「2026-11-11 夜班」= 11-10 20:00 → 11-11 08:00，与「2026-11-11 白班」（11-11 08:00–20:00）
+同属 11-11 这一天：晚上 20:00 交班时，当天的白班与夜班都已结束，可直接结算两个班。
+夜班自身仍占 12 小时，但报表按日期查一整天的两个班时，夜班窗口会往前跨一晚。
 
 这个模块只管时间，不碰数据库、不碰 Excel：报表和接口都从这里取同一种班次定义，
 避免两处各切一套边界。班次边界一律是**带时区**的 datetime —— 库里 `ts` 是
@@ -42,7 +46,8 @@ class ShiftRangeError(ValueError):
 class Shift:
     """一个班次。
 
-    `day` 是班次**开始**的那一天（白班 = 当日；夜班 = 当晚）。
+    `day` 是班次**所属日**（= 班次结束的那一天）：白班 08:00–20:00 当日；
+    夜班 20:00–次日 08:00，归属次日（2026-11-11 先生定）。
     """
 
     kind: str
@@ -57,7 +62,8 @@ class Shift:
     def bounds(self, tz: ZoneInfo) -> tuple[datetime, datetime]:
         """返回 `(起点, 终点)`，均为带时区 datetime；终点取 `起点 + 12h` 以避开 DST 陷阱。"""
         if self.kind == KIND_NIGHT:
-            start = datetime.combine(self.day, time(NIGHT_START_HOUR), tzinfo=tz)
+            # 夜班归属结束日：20:00 从「前一天」开始，次日上午 08:00 落回 self.day
+            start = datetime.combine(self.day - timedelta(days=1), time(NIGHT_START_HOUR), tzinfo=tz)
         else:
             start = datetime.combine(self.day, time(DAY_START_HOUR), tzinfo=tz)
         return start, start + timedelta(hours=12)
@@ -160,8 +166,9 @@ def current_shift(now: datetime, tz: ZoneInfo) -> Shift:
     local = now.astimezone(tz)
     if DAY_START_HOUR <= local.hour < DAY_END_HOUR:
         return Shift(KIND_DAY, local.date())
-    # 00:00–08:00 属于「前一天开始的夜班」
-    day = local.date() if local.hour >= NIGHT_START_HOUR else local.date() - timedelta(days=1)
+    # 20:00 之后开始的夜班要到次日 08:00 才结束 ⇒ 归属次日；
+    # 00:00–08:00 正处在前一晚 20:00 开始的夜班里 ⇒ 归属当天（local.date()）。
+    day = local.date() + timedelta(days=1) if local.hour >= NIGHT_START_HOUR else local.date()
     return Shift(KIND_NIGHT, day)
 
 

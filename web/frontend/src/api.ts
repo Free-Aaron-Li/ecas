@@ -686,8 +686,8 @@ export function concFormula(params: Params | null): string {
   return `conc_raw + ${trimNum(params.offset_conc)}`
 }
 
-/** 矿物真密度 ρp（t/m³）—— 现场给的是固定值 4.3（2026-11-05 先生先改 4.1 后又改回 4.3），不是仪表参数。 */
-export const ORE_TRUE_DENSITY = 4.3
+/** 矿物真密度 ρp（t/m³）—— 现场给的是固定值 3.44（2026-11-11 先生定：4.3 → 3.44），不是仪表参数。 */
+export const ORE_TRUE_DENSITY = 3.44
 
 /**
  * 干矿量 Q（t）= V / (1/ρp + (1 − C)/C)   —— 先生 2026-11-04 给的现场公式（ρw = 1 已约掉）。

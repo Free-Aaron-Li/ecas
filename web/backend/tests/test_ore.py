@@ -25,10 +25,10 @@ def at(seconds: float) -> datetime:
 
 
 def test_干矿量公式_与前端逐行一致() -> None:
-    # c = 0.2 ⇒ Q = 100 / (1/4.3 + 0.8/0.2) = 100 / 4.232558… = 23.6263…
-    assert ore.dry_ore_mass(100.0, 20.0) == pytest.approx(23.6263, abs=1e-4)
-    # 100% 浓度被夹到 0.999：分母 = 1/4.3 + 0.001/0.999
-    assert ore.dry_ore_mass(10.0, 100.0) == pytest.approx(10.0 / (1 / 4.3 + 0.001 / 0.999), rel=1e-9)
+    # c = 0.2 ⇒ Q = 100 / (1/3.44 + 0.8/0.2) = 100 / 4.290698… = 23.3062…
+    assert ore.dry_ore_mass(100.0, 20.0) == pytest.approx(23.3062, abs=1e-4)
+    # 100% 浓度被夹到 0.999：分母 = 1/3.44 + 0.001/0.999
+    assert ore.dry_ore_mass(10.0, 100.0) == pytest.approx(10.0 / (1 / 3.44 + 0.001 / 0.999), rel=1e-9)
     # 0% 浓度会除零，夹到 0.1% 后仍是有限值
     assert ore.dry_ore_mass(10.0, 0.0) is not None
     assert ore.dry_ore_mass(None, 20.0) is None

@@ -29,36 +29,45 @@ TZ = ZoneInfo("Asia/Shanghai")
 
 
 def test_班次边界各十二小时且首尾相接() -> None:
+    """夜班归属**结束日**（2026-11-11 先生定）：夜班(D) = D-1 20:00 → D 08:00，紧接白班(D)。"""
     day = shifts.Shift(shifts.KIND_DAY, date(2026, 9, 25))
     night = shifts.Shift(shifts.KIND_NIGHT, date(2026, 9, 25))
+    next_night = shifts.Shift(shifts.KIND_NIGHT, date(2026, 9, 26))
 
     d_start, d_end = day.bounds(TZ)
     n_start, n_end = night.bounds(TZ)
 
     assert (d_start.hour, d_end.hour) == (8, 20), "白班必须是 08:00–20:00"
     assert (n_start.hour, n_end.hour) == (20, 8), "夜班必须是 20:00–次日 08:00"
-    assert d_end == n_start, "白班终点必须正好接上夜班起点（无缝）"
-    assert n_end.date() == date(2026, 9, 26), "夜班跨天：终点落在第二天"
+    assert n_end == d_start, "夜班终点必须正好接上白班起点（无缝）"
+    assert n_start.date() == date(2026, 9, 24), "夜班归属结束日 ⇒ 从前一晚 20:00 开始"
+    assert n_end.date() == date(2026, 9, 25), "夜班终点落在归属日早上 08:00"
+    # 白班终点必须接上**下一个**夜班的起点
+    assert d_end == next_night.bounds(TZ)[0], "白班终点必须接上当晚 20:00 开始的夜班"
     # 两边都是 12 小时
     assert (d_end - d_start).total_seconds() == 12 * 3600
     assert (n_end - n_start).total_seconds() == 12 * 3600
 
 
-def test_夜班归属开始那天() -> None:
-    """「2026-09-25 夜班」= 09-25 20:00 → 09-26 08:00（不是 09-24 那晚）。"""
+def test_夜班归属结束那天() -> None:
+    """2026-11-11 先生定：11.10 20:00～11.11 08:00 统计在 11.11 夜班。
+
+    ⇒「2026-09-25 夜班」= 09-24 20:00 → 09-25 08:00。
+    """
     night = shifts.Shift(shifts.KIND_NIGHT, date(2026, 9, 25))
     start, end = night.bounds(TZ)
-    assert start.date() == date(2026, 9, 25)
-    assert end.date() == date(2026, 9, 26)
+    assert start.date() == date(2026, 9, 24)
+    assert end.date() == date(2026, 9, 25)
     assert night.label == "2026-09-25 夜班"
-    assert night.label_long(TZ) == "2026-09-25 夜班（09-25 20:00 ~ 09-26 08:00）"
+    assert night.label_long(TZ) == "2026-09-25 夜班（09-24 20:00 ~ 09-25 08:00）"
     assert night.slug == "20260925-night"
 
 
 def test_边界时刻归属左闭右开() -> None:
-    """`contains` 左闭右开：08:00 整属于白班，20:00 整属于夜班，不能双算。"""
+    """`contains` 左闭右开：08:00 整属于白班，20:00 整属于（次日的）夜班，不能双算。"""
     day = shifts.Shift(shifts.KIND_DAY, date(2026, 9, 25))
-    night = shifts.Shift(shifts.KIND_NIGHT, date(2026, 9, 25))
+    night = shifts.Shift(shifts.KIND_NIGHT, date(2026, 9, 26))  # 覆盖 09-25 20:00 起
+    prev_night = shifts.Shift(shifts.KIND_NIGHT, date(2026, 9, 25))  # 覆盖 09-24 20:00 → 09-25 08:00
     at = lambda h, m=0: datetime(2026, 9, 25, h, m, tzinfo=TZ)  # noqa: E731
 
     assert day.contains(at(8), TZ) and not day.contains(at(7, 59), TZ)
@@ -66,22 +75,24 @@ def test_边界时刻归属左闭右开() -> None:
     assert night.contains(at(20), TZ)
     assert night.contains(at(23, 59), TZ)
     assert not night.contains(at(8), TZ), "08:00 整应归白班"
+    assert prev_night.contains(at(7, 59), TZ), "09-25 早上 07:59 属「09-25 夜班」"
+    assert not prev_night.contains(at(8), TZ), "08:00 整归白班，夜班右开"
 
 
 def test_进行中判定() -> None:
-    night = shifts.Shift(shifts.KIND_NIGHT, date(2026, 9, 25))
-    assert not night.is_complete(datetime(2026, 9, 26, 7, 59, tzinfo=TZ), TZ)
-    assert night.is_complete(datetime(2026, 9, 26, 8, 0, tzinfo=TZ), TZ)
+    night = shifts.Shift(shifts.KIND_NIGHT, date(2026, 9, 25))  # 09-24 20:00 → 09-25 08:00
+    assert not night.is_complete(datetime(2026, 9, 25, 7, 59, tzinfo=TZ), TZ)
+    assert night.is_complete(datetime(2026, 9, 25, 8, 0, tzinfo=TZ), TZ)
 
 
 @pytest.mark.parametrize(
     ("moment", "kind", "day"),
     [
-        ((2026, 9, 25, 7, 0), shifts.KIND_NIGHT, (2026, 9, 24)),  # 凌晨属前一天的夜班
+        ((2026, 9, 25, 7, 0), shifts.KIND_NIGHT, (2026, 9, 25)),  # 凌晨属「当天结束」的夜班
         ((2026, 9, 25, 8, 0), shifts.KIND_DAY, (2026, 9, 25)),  # 08:00 整 = 白班
         ((2026, 9, 25, 19, 59), shifts.KIND_DAY, (2026, 9, 25)),
-        ((2026, 9, 25, 20, 0), shifts.KIND_NIGHT, (2026, 9, 25)),  # 20:00 整 = 夜班
-        ((2026, 9, 26, 0, 30), shifts.KIND_NIGHT, (2026, 9, 25)),  # 午夜仍属当晚夜班
+        ((2026, 9, 25, 20, 0), shifts.KIND_NIGHT, (2026, 9, 26)),  # 20:00 起 = 次日结束的夜班
+        ((2026, 9, 26, 0, 30), shifts.KIND_NIGHT, (2026, 9, 26)),  # 午夜仍属该夜班
         ((2026, 9, 26, 8, 0), shifts.KIND_DAY, (2026, 9, 26)),
     ],
 )
@@ -130,11 +141,12 @@ def test_切分顺序与数量() -> None:
 
     two = shifts.shifts_in_range(date(2026, 9, 25), date(2026, 9, 26))
     assert len(two) == 4
-    # 时间上严格递增，且相邻两班首尾相接（无缝无重叠）
-    bounds = [s.bounds(TZ) for s in two]
+    assert [s.kind for s in two] == ["day", "night", "day", "night"]
+    # 按时间排序后必须首尾相接（夜班归属结束日 ⇒ 时间序是 夜(25) → 白(25) → 夜(26) → 白(26)）
+    chrono = sorted(two, key=lambda s: s.bounds(TZ)[0])
+    bounds = [s.bounds(TZ) for s in chrono]
     for (_, prev_end), (next_start, _) in zip(bounds, bounds[1:]):
         assert prev_end == next_start
-    assert [s.kind for s in two] == ["day", "night", "day", "night"]
 
     nights = shifts.shifts_in_range(date(2026, 9, 25), date(2026, 9, 26), ("night",))
     assert [s.label for s in nights] == ["2026-09-25 夜班", "2026-09-26 夜班"]
@@ -167,9 +179,9 @@ def test_未知种类构造即报错() -> None:
 def test_describe_不给易误导的_filename() -> None:
     """`describe()` 不该给 `filename`：真实文件名带型号前缀，只有 settings 知道。"""
     item = shifts.describe(shifts.Shift(shifts.KIND_NIGHT, date(2026, 9, 25)), TZ)
-    assert item["label_long"] == "2026-09-25 夜班（09-25 20:00 ~ 09-26 08:00）"
-    assert item["start"] == "2026-09-25T20:00:00+08:00"
-    assert item["end"] == "2026-09-26T08:00:00+08:00"
+    assert item["label_long"] == "2026-09-25 夜班（09-24 20:00 ~ 09-25 08:00）"
+    assert item["start"] == "2026-09-24T20:00:00+08:00"
+    assert item["end"] == "2026-09-25T08:00:00+08:00"
     assert "filename" not in item
 
 
@@ -527,8 +539,8 @@ def test_班次清单内容(client: TestClient, with_token: str) -> None:
         "2026-09-26 夜班",
     ]
     assert body["shifts"][0]["label_long"] == "2026-09-25 白班（09-25 08:00 ~ 09-25 20:00）"
-    assert body["shifts"][1]["label_long"] == "2026-09-25 夜班（09-25 20:00 ~ 09-26 08:00）"
-    assert body["shifts"][1]["start"] == "2026-09-25T20:00:00+08:00"
+    assert body["shifts"][1]["label_long"] == "2026-09-25 夜班（09-24 20:00 ~ 09-25 08:00）"
+    assert body["shifts"][1]["start"] == "2026-09-24T20:00:00+08:00"
 
 
 @needs_db
@@ -611,7 +623,8 @@ def test_班次清单_容忍完整_ISO_时间串(client: TestClient, with_token:
 
 @needs_db
 def test_单班导出_xlsx(client: TestClient, with_token: str) -> None:
-    resp = client.get(f"/api/export/shifts?start=2026-09-25&end=2026-09-25&kinds=night&token={with_token}")
+    # 新口径：夜班归属结束日 ⇒ 数据窗口 09-25 20:00–09-26 08:00 对应「09-26 夜班」
+    resp = client.get(f"/api/export/shifts?start=2026-09-26&end=2026-09-26&kinds=night&token={with_token}")
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     assert resp.headers["cache-control"] == "no-store"
@@ -626,11 +639,11 @@ def test_单班导出_xlsx(client: TestClient, with_token: str) -> None:
 
 @needs_db
 def test_多班导出_zip_且附说明(client: TestClient, with_token: str) -> None:
-    resp = client.get(f"/api/export/shifts?start=2026-09-25&end=2026-09-25&token={with_token}")
+    resp = client.get(f"/api/export/shifts?start=2026-09-26&end=2026-09-26&token={with_token}")
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "application/zip"
     name = resp.headers["content-disposition"].split('filename="')[1].rstrip('"')
-    assert name == report.bundle_filename(get_settings(), shifts.shifts_in_range(date(2026, 9, 25), date(2026, 9, 25)))
+    assert name == report.bundle_filename(get_settings(), shifts.shifts_in_range(date(2026, 9, 26), date(2026, 9, 26)))
     name.encode("ascii")
 
     with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
@@ -640,7 +653,7 @@ def test_多班导出_zip_且附说明(client: TestClient, with_token: str) -> N
 
         books = [m for m in members if m.endswith(".xlsx")]
         assert len(books) == 2, "白班 + 夜班 = 2 份"
-        assert books == ["ecas_DPRO-66_20260925-day.xlsx", "ecas_DPRO-66_20260925-night.xlsx"]
+        assert books == ["ecas_DPRO-66_20260926-day.xlsx", "ecas_DPRO-66_20260926-night.xlsx"]
 
         # 说明里列的文件必须真的都在包里（且名字逐字一致）
         readme = z.read("说明.txt").decode("utf-8")
@@ -655,7 +668,7 @@ def test_报表统计与_summary_同窗口逐项一致(client: TestClient, with_
     """报表数字必须与看板 `/api/summary` 对得上 —— 这是这份报表可信的前提。"""
     from openpyxl import load_workbook
 
-    query = "start=2026-09-25&end=2026-09-25&kinds=night"
+    query = "start=2026-09-26&end=2026-09-26&kinds=night"
     resp = client.get(f"/api/export/shifts?{query}&token={with_token}")
     assert resp.status_code == 200
 
@@ -703,7 +716,7 @@ def test_导出的明细与_readings_同窗口一致(client: TestClient, with_to
     """明细行数 = 同窗口读数条数，且每行的原始值来自库里（不自造数据）。"""
     from openpyxl import load_workbook
 
-    resp = client.get(f"/api/export/shifts?start=2026-09-25&end=2026-09-25&kinds=night&token={with_token}")
+    resp = client.get(f"/api/export/shifts?start=2026-09-26&end=2026-09-26&kinds=night&token={with_token}")
     ws = load_workbook(io.BytesIO(resp.content))["读数明细"]
     raws = [ws.cell(row=r, column=4).value for r in range(2, ws.max_row + 1)]
     raws = [r for r in raws if isinstance(r, int)]
