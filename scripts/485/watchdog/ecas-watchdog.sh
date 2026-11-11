@@ -132,6 +132,33 @@ fi
 if [[ -n "$r_bad" ]]; then add rtu crit "采集主站异常：${r_bad%; }"
 else add rtu ok "ecas-rtu-master running，rtu-live.jsonl 新鲜"; fi
 
+# 实时帧年龄（2026-11-11）：库里的时间会被"云端回灌"刷新，只有 rtu-live 的帧才是真采集证据
+LIVE_CONC=99999; LIVE_FLOW=99999
+if [[ -r "$RTU_LOG" ]]; then
+    read -r LIVE_CONC LIVE_FLOW < <(python3 - "$RTU_LOG" <<'PY'
+import json,sys,datetime
+last={}
+try:
+    with open(sys.argv[1],"rb") as fh:
+        fh.seek(0,2); size=fh.tell(); fh.seek(max(0,size-400_000))
+        for line in fh.read().decode("utf-8","replace").splitlines():
+            try: rec=json.loads(line)
+            except Exception: continue
+            if rec.get("ok") and rec.get("station") in ("conc","flow") and rec.get("ts"):
+                last[rec["station"]]=rec["ts"]
+except OSError:
+    pass
+now=datetime.datetime.now().astimezone(); out=[]
+for st in ("conc","flow"):
+    ts=last.get(st)
+    try: out.append(str(max(0,int((now-datetime.datetime.fromisoformat(ts)).total_seconds()))))
+    except Exception: out.append("99999")
+print(" ".join(out))
+PY
+    )
+    LIVE_CONC=${LIVE_CONC:-99999}; LIVE_FLOW=${LIVE_FLOW:-99999}
+fi
+
 # ── 1. 数据库可达 ────────────────────────────────────────────────────────────
 db_ok=0
 if docker compose exec -T db pg_isready -U ecas -d ecas < /dev/null >/dev/null 2>&1; then
@@ -170,10 +197,14 @@ if [[ $db_ok == 1 ]]; then
         IFS=':' read -r nm tbl cond thr <<<"$spec"
         sage=$(psql_q "select coalesce(extract(epoch from now()-max(ts))::int,-1) from public.$tbl where $cond")
         case "$sage" in ''|*[!0-9]*) add "$nm" crit "$nm 无可用数据（查询失败或表为空）"; continue ;; esac
+        live_age=$LIVE_CONC; [[ "$nm" == "flow" ]] && live_age=$LIVE_FLOW
         if [[ $sage -gt $(( thr * 60 )) ]]; then
             add "$nm" crit "$nm 最新数据 $(( sage / 60 )) 分钟前（阈值 ${thr} 分钟）"
+        elif [[ "${live_age:-99999}" -gt $RTU_STALE_SEC ]]; then
+            # 库新鲜但本地帧停了：capture+回灌期间的典型形态，不能报"恢复"
+            add "$nm" warn "$nm 库内数据新鲜（$(( sage / 60 )) 分钟前），但本地已 ${live_age}s 未采到帧（数据很可能来自云端回灌，非直采）"
         else
-            add "$nm" ok "$nm 最新数据 $(( sage / 60 )) 分钟前"
+            add "$nm" ok "$nm 最新数据 $(( sage / 60 )) 分钟前（本地帧 ${live_age}s 前）"
         fi
     done
 else
