@@ -113,7 +113,7 @@ export function AccountMenu({ session }: { session: Session | null }) {
           </div>
 
           <div className="account-section-title">
-            登录设备 <span className="hint">{devices.length}/{limit} 台</span>
+            登录设备 <span className="hint">{limit > 0 ? `${devices.length}/${limit} 台` : `${devices.length} 台（不限）`}</span>
           </div>
           <ul className="account-devices">
             {devices.length === 0 ? <li className="hint">暂无记录</li> : null}
@@ -152,7 +152,8 @@ export function AccountMenu({ session }: { session: Session | null }) {
           </ul>
           {msg ? <p className="hint account-msg">{msg}</p> : null}
           <p className="hint account-note">
-            同一账户同一时间只允许一台设备在线：在别的设备登录后，这台会自动退出。普通账户最多绑定 {limit} 台设备。
+            同一账户同一时间只允许一台设备在线：在别的设备登录后，这台会自动退出。
+            {limit > 0 ? `普通账户最多绑定 ${limit} 台设备。` : '设备数量不限（2026-11-11 起），登录过就会登记在下方，可随时移除。'}
           </p>
 
           <div className="account-foot">
