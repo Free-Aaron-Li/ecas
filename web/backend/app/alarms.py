@@ -17,6 +17,7 @@
 |------|----------|------|
 | `break` | `raw < 3600`（<3.6 mA，NAMUR NE43 断线） | 严重 |
 | `over` | `raw > 20500`（>20.5 mA，超量程） | 严重 |
+| `under_range` | `3600 <= raw < i_lo*1000`（低于 4 mA 活零点，状态「偏低」）**持续 ≥ 300 秒** | 警告 |
 | `conc_low` | 有效区间内浓度 < 下限（默认 40.0） | 警告 |
 | `conc_high` | 有效区间内浓度 > 上限（默认 60.0） | 警告 |
 | `no_data` | 距最后一条数据超过 `stale_seconds`（默认 600 秒） | 严重 |
@@ -51,12 +52,14 @@ BREAK = "break"
 OVER = "over"
 CONC_HIGH = "conc_high"
 CONC_LOW = "conc_low"
+UNDER_RANGE = "under_range"
 NO_DATA = "no_data"
-KINDS = (BREAK, OVER, CONC_HIGH, CONC_LOW, NO_DATA)
+KINDS = (BREAK, OVER, UNDER_RANGE, CONC_HIGH, CONC_LOW, NO_DATA)
 
 LABELS = {
     BREAK: "断线",
     OVER: "超量程",
+    UNDER_RANGE: "偏低持续",
     CONC_HIGH: "浓度高于上限",
     CONC_LOW: "浓度低于下限",
     NO_DATA: "长时间无数据",
@@ -64,6 +67,7 @@ LABELS = {
 LEVELS = {
     BREAK: "严重",
     OVER: "严重",
+    UNDER_RANGE: "警告",
     CONC_HIGH: "警告",
     CONC_LOW: "警告",
     NO_DATA: "严重",
@@ -87,12 +91,29 @@ DDL = (
         n_rows      integer     NOT NULL DEFAULT 0,
         note        text,
         created_at  timestamptz NOT NULL DEFAULT now(),
-        CONSTRAINT alarm_event_kind_chk CHECK (kind IN ('break','over','conc_high','conc_low','no_data'))
+        CONSTRAINT alarm_event_kind_chk CHECK (kind IN ('break','over','under_range','conc_high','conc_low','no_data'))
     )
     """,
     "CREATE INDEX IF NOT EXISTS alarm_event_started_idx ON alarm_event (started_ts DESC)",
     # 同一种报警同时只允许有一条"进行中"——扫描重复执行也不会造出第二条
     "CREATE UNIQUE INDEX IF NOT EXISTS alarm_event_open_uidx ON alarm_event (model, kind) WHERE ended_ts IS NULL",
+    # 旧库的 kind 白名单里没有 under_range（`CREATE TABLE IF NOT EXISTS` 不会改已存在的表）。
+    # 按「约束定义里有没有 under_range」判断，缺了才重建 —— 幂等，只在升级后第一次启动时动一次。
+    """
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conname = 'alarm_event_kind_chk'
+           AND conrelid = 'alarm_event'::regclass
+           AND strpos(pg_get_constraintdef(oid), 'under_range') > 0
+      ) THEN
+        ALTER TABLE alarm_event DROP CONSTRAINT IF EXISTS alarm_event_kind_chk;
+        ALTER TABLE alarm_event ADD CONSTRAINT alarm_event_kind_chk
+          CHECK (kind IN ('break','over','under_range','conc_high','conc_low','no_data'));
+      END IF;
+    END $$;
+    """,
     """
     CREATE TABLE IF NOT EXISTS alarm_config (
         model      text        PRIMARY KEY,
@@ -321,18 +342,22 @@ def evaluate(pool: ConnectionPool, settings: Any, now: datetime | None = None) -
 
     # ② 数据类规则：看"最后一段连续满足"是否延续到最后一条
     lo_raw, hi_raw = int(settings.i_lo * 1000), settings.over_high
-    flags: dict[str, list[bool]] = {BREAK: [], OVER: [], CONC_HIGH: [], CONC_LOW: []}
+    flags: dict[str, list[bool]] = {BREAK: [], OVER: [], UNDER_RANGE: [], CONC_HIGH: [], CONC_LOW: []}
     for item in rows:
         raw = int(item["raw"])
         valid = lo_raw <= raw <= hi_raw
         flags[BREAK].append(raw < settings.break_low)
         flags[OVER].append(raw > settings.over_high)
+        # 偏低（under-range）：在 NAMUR 断线判据之上、4 mA 活零点之下。
+        # 它不是断线（仪表还活着，只是输出跑到活零点以下），但浓度同样是外推值、不可用；
+        # 短时可以理解成空池/标定余量，**持续超过判据时长**才记事件（见下方面向时间的闸门）。
+        flags[UNDER_RANGE].append(settings.break_low <= raw < lo_raw)
         # 用 raw 判据（而不是再比一次浓度）：这样「扫描记的事件」「/api/summary 的越限行数」
         # 与「图表那条线」三处用的判据逐位相同，不会在边界行上互相差一条。
         flags[CONC_LOW].append(valid and raw < alarms["low_raw"])
         flags[CONC_HIGH].append(valid and raw > alarms["high_raw"])
 
-    for kind in (BREAK, OVER, CONC_HIGH, CONC_LOW):
+    for kind in (BREAK, OVER, UNDER_RANGE, CONC_HIGH, CONC_LOW):
         segments = _runs(flags[kind])
         state = None
         if segments:
@@ -352,9 +377,38 @@ def evaluate(pool: ConnectionPool, settings: Any, now: datetime | None = None) -
                 "peak_raw": int(rows[peak_i]["raw"]),
                 "peak_ts": rows[peak_i]["ts"],
                 "n_rows": end_i - start_i + 1,
+                # 段的实际跨度（首尾两条数据的时间差）：偏低持续用它比判据时长
+                "duration_seconds": (rows[end_i]["ts"] - rows[start_i]["ts"]).total_seconds(),
             }
 
         row = open_by_kind.get(kind)
+        # 偏低持续：还没攒够判据时长（默认 300 秒）就当作"尚未成立"。
+        # 已经打开的事件（上一段更长的偏低）若和这一段不是同一段，这里补收尾 ——
+        # 恢复时刻取本段之前那条数据的时间，仍然是"有据可查"，不用 now()。
+        if (
+            kind == UNDER_RANGE
+            and state is not None
+            and state["active"]
+            and state["duration_seconds"] < settings.under_range_seconds
+            and (row is None or row["started_ts"] != state["started_ts"])
+        ):
+            if row is not None:
+                ended = rows[start_i - 1]["ts"] if start_i > 0 else now
+                db.execute(
+                    pool,
+                    SQL_UPDATE,
+                    {
+                        "id": row["id"],
+                        "ended_ts": ended,
+                        "peak_raw": row.get("peak_raw"),
+                        "peak_ts": row.get("peak_ts"),
+                        "n_rows": int(row.get("n_rows") or 0),
+                        "note": row.get("note"),
+                    },
+                )
+                closed.append(kind)
+            continue
+
         if state and state["active"]:
             if row is None:
                 db.execute(
@@ -426,6 +480,11 @@ def _note(kind: str, state: dict[str, Any], alarms: dict[str, Any], settings: An
         return ""
     if kind == BREAK:
         return f"电流 {convert.raw_to_ma(peak):.3f} mA 低于断线判据 {settings.break_low / 1000:.1f} mA"
+    if kind == UNDER_RANGE:
+        return (
+            f"电流 {convert.raw_to_ma(peak):.3f} mA 低于 {settings.i_lo:.1f} mA 活零点，"
+            f"已持续 {state['duration_seconds'] / 60:.0f} 分钟（浓度不可用）"
+        )
     if kind == OVER:
         return f"电流 {convert.raw_to_ma(peak):.3f} mA 高于超量程判据 {settings.over_high / 1000:.1f} mA"
     return ""

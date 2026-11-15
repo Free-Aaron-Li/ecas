@@ -149,6 +149,41 @@ def test_断线开事件且不算浓度偏低(client: TestClient, env) -> None:
     assert alarms.CONC_LOW not in _open_kinds(client)
 
 
+def test_偏低短于判据时长不报事件(client: TestClient, env) -> None:
+    """3.76 mA（状态「偏低」）只持续 2 分钟 ⇒ 不够 5 分钟判据，不记事件。
+
+    偏低行同样不是有效浓度（浓度是外推值），所以也不能被误报成「浓度低于下限」。
+    """
+    _insert(client, [3760] * 5, step=30)  # 4 个间隔 × 30s = 120 秒
+    result = alarms.evaluate(client.app.state.pool, env)
+    assert alarms.UNDER_RANGE not in result["opened"]
+    assert alarms.UNDER_RANGE not in _open_kinds(client)
+    assert alarms.CONC_LOW not in _open_kinds(client)
+
+
+def test_偏低持续超过判据时长开事件(client: TestClient, env) -> None:
+    """3.76 mA 连续 6 分钟（≥5 分钟）⇒ 单开 `under_range` 事件，级别「警告」。"""
+    _insert(client, [3760] * 13, step=30)  # 12 个间隔 × 30s = 360 秒
+    result = alarms.evaluate(client.app.state.pool, env)
+    assert result["opened"] == [alarms.UNDER_RANGE]
+    assert _one_row(client, alarms.UNDER_RANGE, "level", open_only=True) == "警告"
+    assert _one_row(client, alarms.UNDER_RANGE, "n_rows", open_only=True) == 13
+    assert "活零点" in _one_row(client, alarms.UNDER_RANGE, "note", open_only=True)
+
+
+def test_偏低恢复后关闭事件(client: TestClient, env) -> None:
+    """偏低段之后回到正常区间：事件按「恢复正常那条数据」的时间收尾。"""
+    _insert(client, [3760] * 13, step=30)
+    alarms.evaluate(client.app.state.pool, env)
+    assert alarms.UNDER_RANGE in _open_kinds(client)
+
+    _insert(client, [9000], start_ago=0)
+    result = alarms.evaluate(client.app.state.pool, env)
+    assert alarms.UNDER_RANGE in result["closed"]
+    assert alarms.UNDER_RANGE not in _open_kinds(client)
+    assert _one_row(client, alarms.UNDER_RANGE, "ended_ts") is not None
+
+
 def test_超量程开事件(client: TestClient, env) -> None:
     _insert(client, [21000])
     assert alarms.evaluate(client.app.state.pool, env)["opened"] == [alarms.OVER]

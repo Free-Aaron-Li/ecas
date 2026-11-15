@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     break_low: int = 3600
     over_high: int = 20500
     stale_seconds: int = 600
+    #: 「偏低持续」判据（先生 2026-11-15 定）：输入低于 4 mA 活零点（状态「偏低」）
+    #: 连续超过这么长时间才单独记事件 —— 短时 under-range 可能只是空池/标定余量，
+    #: 不足以证明仪表坏了；持续超过 5 分钟才值得叫醒人。
+    under_range_seconds: int = 300
 
     # —— 报警上下限（浓度，单位与浓度同）——
     #: ⚠️ 40 / 60 只是**出厂默认值**，真实的上下限可以在看板上直接改

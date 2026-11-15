@@ -5,6 +5,7 @@ import {
   AreaChart,
   Brush,
   CartesianGrid,
+  ReferenceArea,
   ReferenceLine,
   ResponsiveContainer,
   Tooltip,
@@ -18,7 +19,8 @@ import { ZoomTouch } from './ZoomTouch'
 interface Point {
   iso: string
   ts: number
-  conc: number
+  /** 偏低（under-range）时为 null：浓度是外推值、不可用，不画进曲线 */
+  conc: number | null
   raw: number
   ma: number
   status: string
@@ -35,7 +37,7 @@ function ChartTooltip({
 }) {
   if (!active || !payload?.length) return null
   const p = payload[0].payload
-  const side = alarmSide(p.conc, alarms)
+  const side = p.conc == null ? null : alarmSide(p.conc, alarms)
   return (
     <div className="tooltip">
       <div className="t">
@@ -45,10 +47,25 @@ function ChartTooltip({
       <div className="row">
         <span className="k">浓度</span>
         <span>
-          {fmtNum(p.conc, 3)}
-          <span className="unit"> %</span>
+          {p.conc == null ? (
+            <>—</>
+          ) : (
+            <>
+              {fmtNum(p.conc, 3)}
+              <span className="unit"> %</span>
+            </>
+          )}
         </span>
       </div>
+      {p.conc == null && (
+        <div className="row">
+          <span className="k">电流</span>
+          <span>
+            {fmtNum(p.ma, 3)}
+            <span className="unit"> mA</span>
+          </span>
+        </div>
+      )}
     </div>
   )
 }
@@ -106,7 +123,9 @@ export function TrendChart({
     .map((r) => ({
       iso: r.ts,
       ts: Date.parse(r.ts),
-      conc: r.conc,
+      // 偏低（under-range）的浓度是外推值：**不画线**，只画底纹（见下方 lowRuns）。
+      // 2026-11-10 现场 138 个「偏低」点被画成贴着 0 的谷底，先生第一眼读成了断流。
+      conc: r.status === '偏低' ? null : r.conc,
       raw: r.raw,
       ma: r.ma,
       status: r.status,
@@ -168,6 +187,37 @@ export function TrendChart({
     return hours <= 24 ? hh : `${d.getMonth() + 1}/${d.getDate()} ${hh}`
   }
 
+  // 偏低（under-range）区段：连续「偏低」点折成一段底纹。点本身不画线（conc 已置 null），
+  // 底纹只说明"这段时间仪表输出低于 4 mA 活零点、浓度不可用"，与断流的空白区分开。
+  const lowRuns: Array<{ start: number; end: number; n: number }> = []
+  for (let i = 0; i < data.length; i += 1) {
+    if (data[i].status !== '偏低') continue
+    const i0 = i
+    while (i + 1 < data.length && data[i + 1].status === '偏低') i += 1
+    lowRuns.push({ start: data[i0].ts, end: data[i].ts, n: i - i0 + 1 })
+  }
+  // 底纹的上下沿贴着已画出的浓度范围；一个可画的浓度都没有时退回 0~1，至少让人看见底纹
+  let yLo = Number.POSITIVE_INFINITY
+  let yHi = Number.NEGATIVE_INFINITY
+  for (const p of data) {
+    if (p.conc == null) continue
+    if (p.conc < yLo) yLo = p.conc
+    if (p.conc > yHi) yHi = p.conc
+  }
+  const hasConc = Number.isFinite(yLo) && Number.isFinite(yHi)
+  if (!hasConc) {
+    yLo = 0
+    yHi = 1
+  } else if (yHi <= yLo) {
+    yHi = yLo + 1
+  }
+  // 只给足够宽的区段标「偏低」，免得每两三个点就贴一个标签糊成一片
+  const domainSpan =
+    Number.isFinite(domainStart) && Number.isFinite(domainEnd) && domainEnd > domainStart
+      ? domainEnd - domainStart
+      : 0
+  const lowLabel = { value: '偏低', position: 'insideTop', fill: '#f59e0b', fontSize: 10 } as const
+
   return (
     <>
       {sampled && (
@@ -175,6 +225,13 @@ export function TrendChart({
           该区间共 {rowsTotal.toLocaleString()} 个测点，图上按时间**均匀抽样**为 {data.length} 个点
           {bucketSeconds ? `（约每 ${fmtBucket(bucketSeconds)} 一个）` : ''}：每个点都是库里一条真实读数
           （不插值、不平均），但比这更短的峰谷可能被抽掉 —— 要逐秒看请缩短区间。
+        </div>
+      )}
+      {lowRuns.length > 0 && (
+        <div className="chart-note">
+          图中 {lowRuns.length} 段阴影为「偏低」（under-range：仪表输出低于 4 mA 活零点，
+          浓度是外推值、图上不画线，悬停可看电流）—— 这**不是**断流：断流时整条线直接断开，
+          事件里记的是「断线」或「长时间无数据」。
         </div>
       )}
       <div className="chart-head conc-chart-head">
@@ -243,7 +300,7 @@ export function TrendChart({
               tickLine={false}
               axisLine={{ stroke: '#334155' }}
               width={46}
-              domain={['auto', 'auto']}
+              domain={hasConc ? ['auto', 'auto'] : [0, 1]}
               tickFormatter={(v: number) => v.toFixed(1)}
             />
             <Tooltip content={<ChartTooltip alarms={alarms} />} cursor={{ stroke: '#475569', strokeDasharray: '3 3' }} />
@@ -283,6 +340,22 @@ export function TrendChart({
                 label={{ value: `均值 ${fmtNum(average, 2)}`, fill: '#94a3b8', fontSize: 11, position: 'insideTopRight' }}
               />
             )}
+            {lowRuns.map((r) => (
+              <ReferenceArea
+                key={`low-${r.start}-${r.end}`}
+                x1={r.start}
+                x2={r.end}
+                y1={yLo}
+                y2={yHi}
+                fill="#f59e0b"
+                fillOpacity={0.12}
+                stroke="#f59e0b"
+                strokeOpacity={0.35}
+                strokeDasharray="3 3"
+                ifOverflow="visible"
+                label={domainSpan > 0 && r.end - r.start >= domainSpan * 0.05 ? lowLabel : undefined}
+              />
+            ))}
             <Area
               type="monotone"
               dataKey="conc"
