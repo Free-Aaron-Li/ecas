@@ -65,3 +65,38 @@ journalctl -u ecas-heartbeat.service -n 5; cat /var/log/ecas/fallback-pull.jsonl
 
 Mac 侧提示（新）：`~/.files/dsh/bin/ecas-cloud-mode-watch.sh` + launchd `com.user.ecas-cloud-mode-watch`（300s）——
 `capture` 首次出现播 alert「本地离线，云端已接管」，恢复播 info「DTU 切回直连」，直连但心跳超时播 warn。
+
+## 2026-11-16 事故：一次部署把守护脚本删了（部署链修复）
+
+现象：11-15 23:50 部署（提交 `7d9a60c`）后，云端 flipper 于 11-16 01:00 切 `capture`；
+本地数据停在 01:00:05，看板整夜空白，且**永远回不到 direct**（切回判据要求心跳 ≤240s，
+而心跳脚本已被删）。01:03–08:48 的数据全在云端 spool（4100 行），未丢。
+
+根因（`web/deploy/ubuntu/deploy.sh`）：
+- `cmd_stage` 只把 `ecas-watchdog.sh` 一个脚本放进 `$STAGE/watchdog/`；
+- `cmd_push` 的 rsync 带 `--delete`，于是 `/opt/ecas/watchdog/` 里另外 4 个**只在目标机存在**
+  的脚本（`ecas-heartbeat.sh` / `ecas-fallback-pull.sh` / `boot-check.sh` /
+  `ecas-mqtt-selfheal.sh`）被整片删掉；
+- 后果：`ecas-heartbeat` / `ecas-fallback-pull` / `ecas-boot-prepare` 三个单元
+  `status=203/EXEC`（`Failed to locate executable ... No such file or directory`），
+  心跳断 → 切 capture → 回灌也断 → 本地无法自愈。
+
+修复（已提交）：
+1. **本目录是守护脚本与 watchdog 单元的唯一源**：`cmd_stage` 把 `scripts/485/watchdog/`
+   的 `*.sh`、`*.service`、`*.timer`、`*.conf` 全部进 STAGE（watchdog 单元不再从
+   `web/deploy/ubuntu/systemd/` 取，避免两处副本漂移），并 `chmod 755` 补执行位
+   （`cmd_stage` 末尾的 `chmod -R u=rwX,go=rX` 只保 x、不新增，644 推上去照样 203/EXEC）。
+2. `cmd_up` 安装全部 13 个单元/conf（heartbeat / fallback-pull / boot-check / boot-prepare +
+   drop-in）与 5 个脚本，`enable` 全部 timer，并在末尾回显「守护脚本清单 + 各 timer 状态」，
+   缺一个当场可见。
+3. `cmd_up` 把 `/opt/ecas/watchdog`、`/opt/ecas/systemd` 目录 `chown ubuntu:ubuntu`
+   （rsync 以 ubuntu 推，root 属目录会 `Permission denied`，08:51 实测）。
+4. `cmd_up` 增加 `BIND_IP` 告警：必须 `127.0.0.1`（11-04 起曾被改成 `10.10.10.11`，
+   绕开 SSH 隧道把看板暴露在叠加网，`com.ecas.tunnel` 因此一直 `Connection refused`）。
+5. 删掉 `web/deploy/ubuntu/watchdog/` 与 `web/deploy/ubuntu/systemd/ecas-watchdog.*` 三个陈旧副本。
+
+复现/验证：`bash web/deploy/ubuntu/deploy.sh stage` → `/tmp/ecas-stage/watchdog/` 应有 5 个
+可执行脚本、`systemd/` 13 个文件；`push` 后 `/opt/ecas/watchdog/` 5 个脚本仍在；`up` 末段回显全绿。
+
+教训：**任何 rsync `--delete` 之前，先确认 STAGE 覆盖目标目录全量**；只看「目标机存在即完整」
+的假设，就是这次断联的起点。

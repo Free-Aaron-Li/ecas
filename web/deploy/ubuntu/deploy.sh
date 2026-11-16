@@ -125,11 +125,20 @@ cmd_stage() {
     cp "$REPO/web/deploy/ubuntu/systemd/ecas-stack.service" \
        "$REPO/web/deploy/ubuntu/systemd/ecas-backup.service" \
        "$REPO/web/deploy/ubuntu/systemd/ecas-backup.timer" \
-       "$REPO/web/deploy/ubuntu/systemd/ecas-watchdog.service" \
-       "$REPO/web/deploy/ubuntu/systemd/ecas-watchdog.timer" \
        "$REPO/web/deploy/ubuntu/systemd/ecas-flow-ingest.service" "$STAGE/systemd/"
     cp "$REPO/web/deploy/ubuntu/backup/ecas-backup.sh" "$STAGE/backup/"
-    cp "$REPO/web/deploy/ubuntu/watchdog/ecas-watchdog.sh" "$STAGE/watchdog/"
+    # ⚠️ 2026-11-16 事故：旧版只 stage 一个 ecas-watchdog.sh，push 的 `rsync --delete`
+    #   把 /opt/ecas/watchdog/ 里另外 4 个「只在目标机存在」的脚本一并删了 ⇒ 心跳/回灌
+    #   全部 203/EXEC，云端接管后永远回不到直连。守护脚本与单元的唯一源是
+    #   scripts/485/watchdog/（含 heartbeat / fallback-pull / boot-check / mqtt-selfheal
+    #   与全部 .service/.timer/.conf），必须整目录进 STAGE，`--delete` 才是安全的。
+    cp "$REPO/scripts/485/watchdog/"*.sh "$STAGE/watchdog/"
+    # 必须带执行位再推：`chmod -R u=rwX,go=rX` 只保 x（不新增），若源是 644 则 push 后
+    # /opt/ecas/watchdog/*.sh 变 644 ⇒ 单元 ExecStart 直接 203/EXEC
+    chmod 755 "$STAGE/watchdog/"*.sh
+    cp "$REPO/scripts/485/watchdog/"*.service "$STAGE/systemd/"
+    cp "$REPO/scripts/485/watchdog/"*.timer   "$STAGE/systemd/"
+    cp "$REPO/scripts/485/watchdog/"*.conf    "$STAGE/systemd/"
 
     # 非敏感配置：口令/令牌不在这个文件里
     cat > "$STAGE/.env" <<'ENV'
@@ -257,24 +266,44 @@ cmd_up() {
     log "安装 systemd 单元 + enable + 启动"
     sudo_script <<EOF
 set -euo pipefail
+install -d -m 755 /etc/systemd/system/ecas-stack.service.d
 install -m 644 -o root -g root $REMOTE/systemd/ecas-stack.service /etc/systemd/system/ecas-stack.service
 install -m 644 -o root -g root $REMOTE/systemd/ecas-backup.service /etc/systemd/system/ecas-backup.service
 install -m 644 -o root -g root $REMOTE/systemd/ecas-backup.timer   /etc/systemd/system/ecas-backup.timer
+install -m 644 -o root -g root $REMOTE/systemd/ecas-flow-ingest.service /etc/systemd/system/ecas-flow-ingest.service
 install -m 644 -o root -g root $REMOTE/systemd/ecas-watchdog.service /etc/systemd/system/ecas-watchdog.service
 install -m 644 -o root -g root $REMOTE/systemd/ecas-watchdog.timer   /etc/systemd/system/ecas-watchdog.timer
-install -m 755 -o root -g root $REMOTE/watchdog/ecas-watchdog.sh /opt/ecas/watchdog/ecas-watchdog.sh.new && mv -f /opt/ecas/watchdog/ecas-watchdog.sh.new /opt/ecas/watchdog/ecas-watchdog.sh
+install -m 644 -o root -g root $REMOTE/systemd/ecas-heartbeat.service /etc/systemd/system/ecas-heartbeat.service
+install -m 644 -o root -g root $REMOTE/systemd/ecas-heartbeat.timer   /etc/systemd/system/ecas-heartbeat.timer
+install -m 644 -o root -g root $REMOTE/systemd/ecas-fallback-pull.service /etc/systemd/system/ecas-fallback-pull.service
+install -m 644 -o root -g root $REMOTE/systemd/ecas-fallback-pull.timer   /etc/systemd/system/ecas-fallback-pull.timer
+install -m 644 -o root -g root $REMOTE/systemd/ecas-boot-check.service /etc/systemd/system/ecas-boot-check.service
+install -m 644 -o root -g root $REMOTE/systemd/ecas-boot-prepare.service /etc/systemd/system/ecas-boot-prepare.service
+install -m 644 -o root -g root $REMOTE/systemd/ecas-boot-prepare.conf /etc/systemd/system/ecas-stack.service.d/boot-prepare.conf
+for s in ecas-watchdog.sh ecas-heartbeat.sh ecas-fallback-pull.sh boot-check.sh ecas-mqtt-selfheal.sh; do
+    install -m 755 -o root -g root $REMOTE/watchdog/\$s /opt/ecas/watchdog/\$s.new && mv -f /opt/ecas/watchdog/\$s.new /opt/ecas/watchdog/\$s
+done
 install -m 755 -o root -g root $REMOTE/backup/ecas-backup.sh /opt/ecas/backup/ecas-backup.sh.new && mv -f /opt/ecas/backup/ecas-backup.sh.new /opt/ecas/backup/ecas-backup.sh
+# 目录必须归 ubuntu：push 的 rsync 以 ubuntu 身份写，root 属目录会 Permission denied（08:51 实测）
+chown ubuntu:ubuntu /opt/ecas/watchdog /opt/ecas/systemd
+bip=\$(grep -m1 '^BIND_IP=' $REMOTE/.env 2>/dev/null | cut -d= -f2- || true)
+[ "\$bip" = "127.0.0.1" ] || echo "⚠️  $REMOTE/.env 的 BIND_IP=\$bip（应为 127.0.0.1：改回前看板会绕过 SSH 隧道对叠加网开放）"
 systemctl daemon-reload
-systemctl enable ecas-stack
+systemctl enable ecas-stack ecas-boot-prepare.service ecas-boot-check.service
 systemctl restart ecas-stack
 systemctl enable --now ecas-backup.timer
 systemctl enable --now ecas-watchdog.timer
+systemctl enable --now ecas-heartbeat.timer
+systemctl enable --now ecas-fallback-pull.timer
 sleep 8
 echo "── 单元状态 ──"
 systemctl is-enabled ecas-stack
 systemctl is-active ecas-stack || true
 echo "备份定时器：\$(systemctl is-enabled ecas-backup.timer) / \$(systemctl is-active ecas-backup.timer) ｜ 下次 \$(systemctl show -p NextElapseUSecRealtime --value ecas-backup.timer)"
 echo "看门狗定时器：\$(systemctl is-enabled ecas-watchdog.timer) / \$(systemctl is-active ecas-watchdog.timer) ｜ 下次 \$(systemctl show -p NextElapseUSecMonotonic --value ecas-watchdog.timer)"
+echo "── 守护脚本（缺一个都是事故）──"; ls -1 /opt/ecas/watchdog/
+echo "── 其余定时器 ──"
+for t in ecas-heartbeat.timer ecas-fallback-pull.timer; do echo "  \$t: \$(systemctl is-enabled \$t)/\$(systemctl is-active \$t)"; done
 cd $REMOTE && docker compose ps
 EOF
 }
